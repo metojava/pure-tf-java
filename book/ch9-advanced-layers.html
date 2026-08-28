@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ch.9 · Advanced layers</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site">
+  <h1>Neural Networks in Pure Java</h1>
+  <span class="sub">Chapter 9 · Advanced layers: CNN, recurrent, attention</span>
+<nav class="chapters">
+  <ol>
+    <li><a href="index.html">Home</a></li>
+    <li><a href="ch1-getting-started.html">1. Getting started</a></li>
+    <li><a href="ch2-tensors.html">2. Tensors</a></li>
+    <li><a href="ch3-layers.html">3. Layers</a></li>
+    <li><a href="ch4-training.html">4. Training</a></li>
+    <li><a href="ch5-optimizers-lr.html">5. Optimizers &amp; LR</a></li>
+    <li><a href="ch6-evaluation.html">6. Evaluation</a></li>
+    <li><a href="ch7-persistence.html">7. Save &amp; load</a></li>
+    <li><a href="ch8-putting-it-together.html">8. End to end</a></li>
+    <li><a href="ch9-advanced-layers.html">9. Advanced layers</a></li>
+    <li><a href="ch10-sequence-generative.html">10. Generative &amp; sequence</a></li>
+    <li><a href="ch11-rnn-lstm-nlp.html">11. RNN, LSTM &amp; NLP</a></li>
+  </ol>
+</nav></header><main>
+  <h2>Beyond the MLP</h2>
+  <p>
+    Chapters 3–8 cover the <em>core</em> path built around <code>Dense</code>. But the
+    <code>nn</code> package also ships a full suite of advanced layers — convolutional,
+    recurrent, and attention blocks — implemented from scratch on the same autograd
+    engine. This chapter shows their real constructors and minimal usage.
+  </p>
+
+  <h2>Convolutional layers</h2>
+  <p>
+    <code>Conv2D</code> slides a bank of learned filters over an image. Images live in
+    <strong>NHWC</strong> layout (batch, height, width, channels), matching the pixel
+    arrays of <code>IdxDataset</code>. Padding is either <code>Padding.VALID</code> or
+    <code>Padding.SAME</code>.
+  </p>
+  <pre><code>Sequential cnn = new Sequential()
+        .add(new Reshape(-1, 28, 28, 1))     // flat 784 -&gt; NHWC 28x28x1
+        .add(new Conv2D(32, 3, 3, 1, 1, Padding.SAME))  // 32 filters, 3x3
+        .add(new ReLU())
+        .add(new MaxPool2D(2, 2, 2, 2, Padding.VALID))   // downsample 2x
+        .add(new Conv2D(64, 3, 3, 1, 1, Padding.SAME))
+        .add(new ReLU())
+        .add(new MaxPool2D(2, 2, 2, 2, Padding.VALID))
+        .add(new Flatten())
+        .add(new Dense(128, Dense.Act.RELU))
+        .add(new Dropout(0.15f))
+        .add(new Dense(10));</code></pre>
+  <p>
+    A complete CNN over Fashion-MNIST. The pipeline is
+    <code>Conv2D(32) &rarr; ReLU &rarr; MaxPool &rarr; Conv2D(64) &rarr; ReLU &rarr;
+    MaxPool &rarr; Flatten &rarr; Dense(128) &rarr; Dense(10)</code> — exactly the
+    architecture this library's original demo used before we swapped it for the faster
+    MLP.
+  </p>
+  <table>
+    <tr><th>Layer</th><th>Constructor</th><th>Role</th></tr>
+    <tr><td><code>Conv2D</code></td>
+        <td><code>Conv2D(filters, kh, kw, sh, sw, Padding)</code></td>
+        <td>learnt filter bank over NHWC images</td></tr>
+    <tr><td><code>MaxPool2D</code></td>
+        <td><code>MaxPool2D(kh, kw, sh, sw, Padding)</code></td>
+        <td>max-downsample, adds translation invariance</td></tr>
+    <tr><td><code>AvgPool2D</code></td>
+        <td><code>AvgPool2D(kh, kw, sh, sw, Padding)</code></td>
+        <td>mean-downsample (smoother than max)</td></tr>
+    <tr><td><code>GlobalAveragePooling</code></td>
+        <td><code>new GlobalAveragePooling()</code></td>
+        <td>reduce each feature map to one number (regularizes)</td></tr>
+    <tr><td><code>Upsample2D</code></td>
+        <td><code>Upsample2D(factorH, factorW)</code></td>
+        <td>nearest-neighbour upscale (generative nets)</td></tr>
+    <tr><td><code>ZeroPad2D</code></td>
+        <td><code>ZeroPad2D(top, bottom, left, right)</code></td>
+        <td>explicit zero padding</td></tr>
+  </table>
+  <div class="note">
+    <b>NHWC throughout.</b> Because pixels load as <code>float[count][rows*cols]</code>,
+    flatten then reshape restores the spatial grid: <code>Reshape(-1,H,W,C)</code>. This
+    mirrors Keras's <code>Reshape((H,W,C))</code> and keeps every conv op consistent.
+  </div>
+
+  <h2>Recurrent layers</h2>
+  <p>
+    Recurrent layers process <em>sequences</em>. Input is <code>[batch, time, features]</code>.
+    By default (returning only the final state) they feed a following <code>Dense</code>;
+    with <code>returnSequence</code> they output one vector per timestep.
+  </p>
+  <pre><code>// return LAST state only - feed a classifier
+Sequential rnn = new Sequential()
+        .add(new LSTM(64))                     // -> [batch, 64]
+        .add(new Dense(10));
+
+// return EVERY timestep - feed another recurrent layer
+Sequential bi = new Sequential()
+        .add(new LSTM(64, true))               // -> [batch, T, 64]
+        .add(new GRU(32, true))
+        .add(new Flatten())
+        .add(new Dense(10));</code></pre>
+  <table>
+    <tr><th>Layer</th><th>Constructor</th><th>Notes</th></tr>
+    <tr><td><code>RNN</code></td><td><code>RNN(units [, returnSequence])</code></td><td>plain Elman cell</td></tr>
+    <tr><td><code>LSTM</code></td><td><code>LSTM(units [, returnSequence])</code></td><td>gated, long-term memory</td></tr>
+    <tr><td><code>GRU</code></td><td><code>GRU(units [, returnSequence])</code></td><td>lighter gating than LSTM</td></tr>
+  </table>
+
+  <h2>Attention &amp; embeddings</h2>
+  <p>
+    For transformer-style models, <code>Embedding</code> maps token ids to dense vectors,
+    then attention mixes them. Inputs are integer token ids, so they need a small manual
+    batching path (see the embedding demo in <code>puretf.demo</code>).
+  </p>
+  <pre><code>int vocab = 1000, embedDim = 64;
+Embedding embed = new Embedding(vocab, embedDim);   // id -&gt; 64-vector
+
+Sequential decoder = new Sequential()
+        .add(new SelfAttention(true))              // causal self-attention
+        .add(new Flatten())
+        .add(new Dense(10));</code></pre>
+  <table>
+    <tr><th>Layer</th><th>Constructor</th><th>Notes</th></tr>
+    <tr><td><code>Embedding</code></td><td><code>Embedding(vocab, dim)</code></td><td>trainable lookup table</td></tr>
+    <tr><td><code>SelfAttention</code></td><td><code>SelfAttention([causal])</code></td><td>single-head self-attention</td></tr>
+    <tr><td><code>MultiHeadAttention</code></td><td><code>MultiHeadAttention(heads [, causal])</code></td><td>multi-head (parallel) attention</td></tr>
+    <tr><td><code>PositionalEncoding</code></td><td><code>new PositionalEncoding()</code></td><td>adds sin/cos position signal</td></tr>
+  </table>
+
+  <h2>Normalization &amp; regularization</h2>
+  <table>
+    <tr><th>Layer</th><th>Constructor</th><th>Role</th></tr>
+    <tr><td><code>BatchNorm1D</code></td><td><code>BatchNorm1D([momentum, eps])</code></td><td>normalize features within a batch (MLP/CNN pre-activation)</td></tr>
+    <tr><td><code>BatchNorm2D</code></td><td><code>BatchNorm2D([momentum, eps])</code></td><td>normalize per-channel for NHWC feature maps</td></tr>
+    <tr><td><code>LayerNorm1D</code></td><td><code>LayerNorm1D([eps])</code></td><td>normalize per-sample over features (transformer-friendly)</td></tr>
+    <tr><td><code>Dropout</code></td><td><code>Dropout(p)</code></td><td>randomly zero activations while training</td></tr>
+  </table>
+  <p>
+    All of these persist through <code>saveTo</code>/<code>loadFrom</code>; BatchNorm's
+    running statistics are carried by <code>saveState</code>/<code>loadState</code>.
+  </p>
+
+  <h2>Ordering hints</h2>
+  <div class="tip">
+    <b>Typical stacks.</b> CNN vision:<br>
+    <code>Reshape → Conv2D → BatchNorm2D → ReLU → MaxPool → … → Flatten → Dense → Softmax</code>.<br>
+    Sequence-to-vector:<br>
+    <code>Embedding → LSTM(units) → Dense → Softmax</code>.<br>
+    Transformer-ish:<br>
+    <code>Embedding → PositionalEncoding → MultiHeadAttention → LayerNorm1D → Flatten → Dense</code>.
+    The demos in <code>puretf.demo</code> show each pattern running.
+  </div>
+
+  <p><a href="ch8-putting-it-together.html">← Back to Chapter 8, or start again at Chapter 1</a></p>
+</main>
+<footer>pure-tf-java book · Chapter 9</footer>
+</body>
+</html>
+

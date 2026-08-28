@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ch.5 · Optimizers &amp; learning rates</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site">
+  <h1>Neural Networks in Pure Java</h1>
+  <span class="sub">Chapter 5 · Optimizers &amp; learning rates</span>
+<nav class="chapters">
+  <ol>
+    <li><a href="index.html">Home</a></li>
+    <li><a href="ch1-getting-started.html">1. Getting started</a></li>
+    <li><a href="ch2-tensors.html">2. Tensors</a></li>
+    <li><a href="ch3-layers.html">3. Layers</a></li>
+    <li><a href="ch4-training.html">4. Training</a></li>
+    <li><a href="ch5-optimizers-lr.html">5. Optimizers &amp; LR</a></li>
+    <li><a href="ch6-evaluation.html">6. Evaluation</a></li>
+    <li><a href="ch7-persistence.html">7. Save &amp; load</a></li>
+    <li><a href="ch8-putting-it-together.html">8. End to end</a></li>
+    <li><a href="ch9-advanced-layers.html">9. Advanced layers</a></li>
+    <li><a href="ch10-sequence-generative.html">10. Generative &amp; sequence</a></li>
+    <li><a href="ch11-rnn-lstm-nlp.html">11. RNN, LSTM &amp; NLP</a></li>
+  </ol>
+</nav></header><main>
+  <h2>Optimizers</h2>
+  <p>
+    After <code>loss.backward()</code> fills each parameter's gradient
+    (<code>p.grad</code>), an optimizer decides how to update
+    <code>p.data</code>. All optimizers implement the <code>Optim.Stepper</code> interface:
+  </p>
+  <pre><code>public interface Stepper {
+    void setLr(float lr);       // called each epoch by the schedule
+    void step(List&lt;Tensor&gt; params);
+}</code></pre>
+
+  <h3>Available optimizers in <code>Optim</code></h3>
+  <table>
+    <tr><th>Optimizer</th><th>Constructor</th><th>Idea</th></tr>
+    <tr><td>SGD</td><td><code>Optim.sgd(params, lr)</code></td>
+        <td>Plain: <code>p -= lr * grad</code>. Updated outside a Stepper.</td></tr>
+    <tr><td>Momentum</td><td><code>new Optim.Momentum(lr, momentum)</code></td>
+        <td>Accumulates a velocity to smooth updates and escape local minima.</td></tr>
+    <tr><td>RMSProp</td><td><code>new Optim.RMSProp(lr [, decay, eps])</code></td>
+        <td>Normalizes each weight's step by an running average of its squared gradient.</td></tr>
+    <tr><td>Adam</td><td><code>new Optim.Adam(lr [, beta1, beta2, eps])</code></td>
+        <td>Combines momentum + RMSProp with bias correction. <b>Default choice.</b></td></tr>
+  </table>
+
+  <h3>Using them</h3>
+  <pre><code>// Classic Adam (most reliable for Fashion-MNIST):
+Sequential net = new Sequential()
+        .add(new Flatten())
+        .add(new Dense(128, Dense.Act.RELU))
+        .add(new Dense(10));
+
+History h = net.fitHistory(trI.pixels(), trL.labels(), 10,
+        5, 128,
+        new Optim.Adam(0.0015f),
+        LrSchedule.cosine(0.0015f, 0.0002f, 5),
+        0f, null, true);
+
+// Momentum or RMSProp swap in with one line:
+// new Optim.Momentum(0.01f, 0.9f)
+// new Optim.RMSProp(0.001f)</code></pre>
+
+  <h2>Learning-rate schedules</h2>
+  <p>
+    <code>LrSchedule</code> is a functional interface returning the LR for each epoch.
+  </p>
+  <pre><code>@FunctionalInterface
+public interface LrSchedule {
+    float lrAt(int epoch);
+    static LrSchedule constant(float lr);
+    static LrSchedule step(float lr, int dropEvery);      // halve every N epochs
+    static LrSchedule cosine(float maxLr, float minLr, int totalEpochs);
+    static LrSchedule exponential(float lr, float decay);
+}</code></pre>
+  <pre><code>LrSchedule.constant(0.001f);                 // always 0.001
+LrSchedule.step(0.01f, 3);                    // 0.01, then 0.005, ...
+LrSchedule.exponential(0.01f, 0.7f);          // 0.01 * 0.7^epoch
+LrSchedule.cosine(0.005f, 0.0007f, 5);        // cosine anneal
+// Or write any custom schedule as a lambda:
+LrSchedule custom = epoch -> 0.001f / (1 + epoch);
+</code></pre>
+
+  <h2>What cosine annealing does</h2>
+  <p>
+    Cosine annealing decays the LR along a cosine curve from <code>maxLr</code> down to
+    <code>minLr</code> across the epochs:
+  </p>
+  <pre><code>lr(epoch) = minLr + 0.5 * (maxLr - minLr) * (1 + cos(pi * epoch / (totalEpochs - 1)))</code></pre>
+  <ul>
+    <li><b>Early</b>: near <code>maxLr</code> — big steps, fast initial progress.</li>
+    <li><b>Middle</b>: the step size decays smoothly.</li>
+    <li><b>End</b>: near <code>minLr</code> — tiny steps so the optimizer settles cleanly
+        instead of overshooting the optimum.</li>
+  </ul>
+
+  <h2>Measured effect (from our experiments)</h2>
+  <p>
+    On the current MLP + dropout model, we swept the LR and the schedule and recorded the
+    results (12k-subset, 3 epochs, batch 128). <em>Speed was identical for every config</em> —
+    the optimizer does not change the number of floating-point operations. Only the accuracy
+    and loss moved.
+  </p>
+  <h3>Learning-rate sweep (cosine)</h3>
+  <table>
+    <tr><th>LR</th><th>s/epoch</th><th>final loss</th><th>test accuracy</th></tr>
+    <tr><td>0.0005</td><td>1.2</td><td>0.6064</td><td>80.25%</td></tr>
+    <tr><td>0.001</td><td>1.1</td><td>0.5185</td><td>83.15%</td></tr>
+    <tr><td>0.0015</td><td>1.0</td><td>0.4744</td><td>84.40%</td></tr>
+    <tr><td>0.003</td><td>1.0</td><td>0.4388</td><td>85.00%</td></tr>
+    <tr><td><b>0.005</b></td><td>1.0</td><td>0.4312</td><td><b>85.35%</b></td></tr>
+  </table>
+  <h3>Schedule comparison (LR 0.005)</h3>
+  <table>
+    <tr><th>Schedule</th><th>s/epoch</th><th>final loss</th><th>test accuracy</th></tr>
+    <tr><td>constant</td><td>1.1</td><td>0.4805</td><td>81.85%</td></tr>
+    <tr><td>step</td><td>1.1</td><td>0.4458</td><td>83.15%</td></tr>
+    <tr><td>exponential</td><td>1.0</td><td>0.4460</td><td>83.25%</td></tr>
+    <tr><td><b>cosine</b></td><td>1.0</td><td>0.4368</td><td><b>85.15%</b></td></tr>
+  </table>
+  <div class="tip">
+    <b>Takeaway.</b> Use <b>Adam with LR ≈ 0.003–0.005 and a cosine schedule</b> for this
+    model. On the full 60k set with LR 0.005 + cosine for 5 epochs, the model reached
+    <b>87.48% test accuracy</b> at ~4.1 s/epoch. (A full experiment write-up lives in
+    <code>experiments.html</code>.)
+  </div>
+
+  <p><a href="ch6-evaluation.html">Next: Chapter 6 — Evaluation &amp; metrics →</a></p>
+</main>
+<footer>pure-tf-java book · Chapter 5</footer>
+</body>
+</html>
+

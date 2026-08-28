@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ch.4 · Training</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site">
+  <h1>Neural Networks in Pure Java</h1>
+  <span class="sub">Chapter 4 · Training</span>
+<nav class="chapters">
+  <ol>
+    <li><a href="index.html">Home</a></li>
+    <li><a href="ch1-getting-started.html">1. Getting started</a></li>
+    <li><a href="ch2-tensors.html">2. Tensors</a></li>
+    <li><a href="ch3-layers.html">3. Layers</a></li>
+    <li><a href="ch4-training.html">4. Training</a></li>
+    <li><a href="ch5-optimizers-lr.html">5. Optimizers &amp; LR</a></li>
+    <li><a href="ch6-evaluation.html">6. Evaluation</a></li>
+    <li><a href="ch7-persistence.html">7. Save &amp; load</a></li>
+    <li><a href="ch8-putting-it-together.html">8. End to end</a></li>
+    <li><a href="ch9-advanced-layers.html">9. Advanced layers</a></li>
+    <li><a href="ch10-sequence-generative.html">10. Generative &amp; sequence</a></li>
+    <li><a href="ch11-rnn-lstm-nlp.html">11. RNN, LSTM &amp; NLP</a></li>
+  </ol>
+</nav></header><main>
+  <h2>The training loop, in one picture</h2>
+  <p>
+    Training is a repeated cycle: for each <em>epoch</em>, shuffle the data, slice it into
+    <em>batches</em>, and for each batch do
+    <code>forward → loss → backward → optimizer.step</code>. Everything here is handled by
+    <code>Sequential</code>, but it helps to see it.
+  </p>
+  <pre><code>for (int epoch = 0; epoch &lt; epochs; epoch++) {
+    opt.setLr(sched.lrAt(epoch));          // learning-rate schedule
+    net.setTraining(true);
+    shuffle(idx, new Random(1000L + epoch));  // per-epoch shuffling
+
+    for (int start = 0; start &lt; nTr; start += batch) {
+        Tensor.resetGraph();               // new tape for this batch
+        Tensor logits  = net.forward(batchX);
+        Tensor loss    = Tensor.softmaxCE(logits, batchLabels);
+        for (Tensor p : net.params()) p.zeroGrad();
+        loss.backward();                   // fills every p.grad
+        opt.step(net.params());            // update weights
+    }
+}</code></pre>
+
+  <h2>High-level methods on <code>Sequential</code></h2>
+  <p>In practice you call one of these:</p>
+  <table>
+    <tr><th>Method</th><th>Use</th></tr>
+    <tr><td><code>fitClassifier(X, Y, classes, epochs, batch, lr, verbose)</code></td>
+        <td>Simple classifier training with a fixed LR (returns <code>double[]</code>).</td></tr>
+    <tr><td><code>fitClassifier(...)</code> overload</td>
+        <td>Same name returning a <code>History</code>.</td></tr>
+    <tr><td><code>fitHistory(X, Y, classes, epochs, batch, opt, sched, valSplit, earlyStop, verbose)</code></td>
+        <td>Full control: any optimizer, any LR schedule, optional validation and early stopping. Returns <code>History</code>.</td></tr>
+    <tr><td><code>evaluate(X, Y, classes)</code></td>
+        <td>Returns <code>double[]{loss, accuracy}</code> on any set.</td></tr>
+    <tr><td><code>predict(X)</code></td><td>Raw logits <code>float[n][classes]</code>.</td></tr>
+    <tr><td><code>predictClass(X)</code></td><td>Argmax class id per sample.</td></tr>
+  </table>
+
+  <h2>The recommended call: <code>fitHistory</code></h2>
+  <p>
+    It gives you the most control and returns a <code>History</code> you can plot or
+    summarize. Signature:
+  </p>
+  <pre><code>public History fitHistory(float[][] X, int[] Y, int classes,
+                          int epochs, int batch,
+                          Optim.Stepper opt, LrSchedule sched,
+                          float valSplit, EarlyStopping earlyStop,
+                          boolean verbose)</code></pre>
+  <pre><code>History hist = net.fitHistory(trainX, trainY, 10,
+        5, 128,
+        new Optim.Adam(0.005f),
+        LrSchedule.cosine(0.005f, 0.0007f, 5),
+        0.1f,                 // hold back 10% for validation
+        null,                 // no early stopping
+        true);                // print per-epoch loss/acc/time
+
+hist.printSummary();</code></pre>
+
+  <h2>The <code>Dataset</code> helper</h2>
+  <p>
+    <code>puretf.data.Dataset</code> wraps your feature rows and labels and handles the
+    bookkeeping every workflow needs: shuffling, train/val splits, mini-batches, and quick
+    subsets — all keeping features and labels aligned.
+  </p>
+  <pre><code>import puretf.data.Dataset;
+
+Dataset ds  = new Dataset(trainX, trainY);      // features float[n][d], labels int[n]
+Dataset sub = ds.subsample(12000);              // evenly-spread first 12k (fast tests)
+ds.shuffle(733L);                               // seeded shuffle (in place)
+
+Dataset.Split sp = ds.split(0.9);               // train/val split (two views)
+Dataset train = sp.train(), val = sp.val();
+
+for (Dataset.Batch b : train.batches(128)) {    // mini-batches of features+labels
+    float[][] bx = b.x();                       // float[batch][d]
+    int[]     by = b.y();                       // int[batch]
+    // ... forward(bx), loss, backward, optimizer.step ...
+}</code></pre>
+  <p>
+    Operations only permute an internal index array, so the raw feature/label arrays are
+    never copied or reordered — splits are <em>views</em>, not copies, and stay cheap.
+  </p>
+
+  <h2>Input format</h2>
+  <ul>
+    <li><code>X</code> is <code>float[n][featureDim]</code> — each sample is one row.</li>
+    <li><code>Y</code> is <code>int[n]</code> for classifiers (the class id), or
+        <code>float[n][outDim]</code> for the regression <code>fit</code> methods.</li>
+    <li><code>classes</code> is the number of output classes (for the classifier loss and metrics).</li>
+  </ul>
+
+  <h2>Per-epoch output</h2>
+  <p>
+    With <code>verbose=true</code> you get a real-time line per epoch (this is what the
+    demos print):
+  </p>
+  <pre><code>Epoch 1/5 - loss 0.5604 - accuracy 0.7974 (4.6 s)
+Epoch 2/5 - loss 0.4203 - accuracy 0.8453 (4.2 s)
+Epoch 3/5 - loss 0.3764 - accuracy 0.8620 (4.0 s)
+Epoch 4/5 - loss 0.3361 - accuracy 0.8751 (3.8 s)
+Epoch 5/5 - loss 0.3172 - accuracy 0.8828 (3.8 s)</code></pre>
+  <p>
+    Each line shows <strong>loss</strong>, <strong>training accuracy</strong>, and the
+    <strong>seconds</strong> that epoch took. Loss falls monotonically and accuracy climbs
+    — the model is still learning, so more epochs would help.
+  </p>
+
+  <h2>Batching and epochs</h2>
+  <div class="note">
+    <b>Epoch</b> = one full pass over the whole training set (60 000 images here).
+    <b>Batch</b> = the slice of images (e.g. 128) the weights are updated on at once.
+    A batch size of 128 on 60k images means 469 weight updates per epoch. Smaller batches
+    update more often (noisier but may generalize better); larger batches are smoother and
+    slightly cheaper per image.
+  </div>
+
+  <h2>Early stopping (optional)</h2>
+  <p>
+    Pass an <code>EarlyStopping</code> to stop once validation stops improving and restore
+    the best weights found:
+  </p>
+  <pre><code>EarlyStopping es = new EarlyStopping(5);  // patience = 5 epochs
+History hist = net.fitHistory(..., 0.1f, es, true);</code></pre>
+
+  <p><a href="ch5-optimizers-lr.html">Next: Chapter 5 — Optimizers &amp; learning rates →</a></p>
+</main>
+<footer>pure-tf-java book · Chapter 4</footer>
+</body>
+</html>
+

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ch.7 · Saving &amp; loading</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site">
+  <h1>Neural Networks in Pure Java</h1>
+  <span class="sub">Chapter 7 · Saving &amp; loading</span>
+<nav class="chapters">
+  <ol>
+    <li><a href="index.html">Home</a></li>
+    <li><a href="ch1-getting-started.html">1. Getting started</a></li>
+    <li><a href="ch2-tensors.html">2. Tensors</a></li>
+    <li><a href="ch3-layers.html">3. Layers</a></li>
+    <li><a href="ch4-training.html">4. Training</a></li>
+    <li><a href="ch5-optimizers-lr.html">5. Optimizers &amp; LR</a></li>
+    <li><a href="ch6-evaluation.html">6. Evaluation</a></li>
+    <li><a href="ch7-persistence.html">7. Save &amp; load</a></li>
+    <li><a href="ch8-putting-it-together.html">8. End to end</a></li>
+    <li><a href="ch9-advanced-layers.html">9. Advanced layers</a></li>
+    <li><a href="ch10-sequence-generative.html">10. Generative &amp; sequence</a></li>
+    <li><a href="ch11-rnn-lstm-nlp.html">11. RNN, LSTM &amp; NLP</a></li>
+  </ol>
+</nav></header><main>
+  <h2>Why persist a model?</h2>
+  <p>
+    Training costs time. Persistence lets you train once, write the weights to disk, and
+    later load them back for inference — or to keep training — without rebuilding the
+    network from scratch. The library makes this trivial:
+  </p>
+  <pre><code>net.saveTo(Path.of("fashion-mlp.bin"));            // one call to save
+
+Sequential loaded = Sequential.loadFrom(Path.of("fashion-mlp.bin"));  // one call to load</code></pre>
+
+  <h2>Round-trip in practice</h2>
+  <pre><code>// --- train &amp; save ---
+Sequential net = new Sequential()
+        .add(new Flatten())
+        .add(new Dense(128, Dense.Act.RELU))
+        .add(new Dense(10));
+
+net.fitClassifier(trI.pixels(), trL.labels(), 10, 5, 128, 0.001f, true);
+net.saveTo(Path.of("fashion-mlp.bin"));
+System.out.println("saved to fashion-mlp.bin");
+
+// --- later, in a different run ---
+Sequential net2 = Sequential.loadFrom(Path.of("fashion-mlp.bin"));
+double[] res = net2.evaluate(teI.pixels(), teL.labels(), 10);
+System.out.println("loaded accuracy = " + res[1]);</code></pre>
+
+  <h2>What gets saved</h2>
+  <p>
+    The library serializes enough to fully reconstruct the network:
+  </p>
+  <ul>
+    <li>The <b>layer types and their constructor arguments</b> (via <code>typeCode()</code>
+        and <code>specArgs()</code>), so the architecture is rebuilt exactly.</li>
+    <li>The <b>trainable weights</b> of every layer.</li>
+    <li>Any <b>extra buffers</b> a layer needs (for example BatchNorm's running mean/variance,
+        via <code>saveState</code>/<code>loadState</code>).</li>
+  </ul>
+  <pre><code>// Layers participate via hooks on Layer:
+public int       typeCode()                    { return -1; }  // -1 = cannot persist
+public int[]     specArgs()                    { return new int[0]; }
+public void      saveState(DataOutputStream out) {}            // extra buffers
+public void      loadState(DataInputStream  in)  {}</code></pre>
+  <p>
+    A <code>Dense</code> layer, for example, reports <code>typeCode()=1</code> and
+    <code>specArgs()={units, activationOrdinal}</code>, plus hands over its
+    <code>w</code> and <code>b</code> tensors. On load, the engine recreates each layer
+    from its spec args and copies the weights back in.
+  </p>
+
+  <h2>Design notes</h2>
+  <div class="note">
+    <b>Binary, not JSON.</b> The format is a compact binary stream (constructor args
+    are <code>int[]</code>, weights are <code>float[]</code>), so files are small and fast
+    to read. Because it records the exact layer spec, it also validates that a file loads
+    into a compatible architecture.
+  </div>
+  <div class="tip">
+    <b>Custom layers.</b> If you write your own <code>Layer</code>, give it a unique
+    <code>typeCode()</code> and a matching <code>specArgs()</code>, and it will persist too.
+    Leave <code>typeCode()</code> at <code>-1</code> only if you never save that layer.
+  </div>
+
+  <h2>Typical workflow</h2>
+  <ol>
+    <li>Train (this is the expensive step).</li>
+    <li><code>net.saveTo(path)</code> once.</li>
+    <li>Ship the <code>.bin</code> file + the library to wherever inference runs.</li>
+    <li><code>Sequential.loadFrom(path)</code> and call <code>predict</code>.</li>
+  </ol>
+  <pre><code>Sequential model = Sequential.loadFrom(Path.of("fashion-mlp.bin"));
+model.setTraining(false);                  // inference mode
+float[][] logits = model.predict(newImage);</code></pre>
+
+  <p><a href="ch8-putting-it-together.html">Next: Chapter 8 — Putting it together →</a></p>
+</main>
+<footer>pure-tf-java book · Chapter 7</footer>
+</body>
+</html>
+

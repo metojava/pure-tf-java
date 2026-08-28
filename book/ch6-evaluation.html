@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ch.6 · Evaluation &amp; metrics</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site">
+  <h1>Neural Networks in Pure Java</h1>
+  <span class="sub">Chapter 6 · Evaluation &amp; metrics</span>
+<nav class="chapters">
+  <ol>
+    <li><a href="index.html">Home</a></li>
+    <li><a href="ch1-getting-started.html">1. Getting started</a></li>
+    <li><a href="ch2-tensors.html">2. Tensors</a></li>
+    <li><a href="ch3-layers.html">3. Layers</a></li>
+    <li><a href="ch4-training.html">4. Training</a></li>
+    <li><a href="ch5-optimizers-lr.html">5. Optimizers &amp; LR</a></li>
+    <li><a href="ch6-evaluation.html">6. Evaluation</a></li>
+    <li><a href="ch7-persistence.html">7. Save &amp; load</a></li>
+    <li><a href="ch8-putting-it-together.html">8. End to end</a></li>
+    <li><a href="ch9-advanced-layers.html">9. Advanced layers</a></li>
+    <li><a href="ch10-sequence-generative.html">10. Generative &amp; sequence</a></li>
+    <li><a href="ch11-rnn-lstm-nlp.html">11. RNN, LSTM &amp; NLP</a></li>
+  </ol>
+</nav></header><main>
+  <h2>How to measure a classifier</h2>
+  <p>
+    Training accuracy tells you the model fit its data. What you actually care about is
+    <em>test accuracy</em> — performance on images it never saw. This chapter shows the
+    library's evaluation helpers: <code>evaluate</code>, <code>Metrics</code>, confusion
+    matrices, and the pure-Java2D prediction grid.
+  </p>
+
+  <h2>Quick evaluation</h2>
+  <pre><code>double[] res = net.evaluate(testX, testY, 10);
+// res[0] = cross-entropy loss, res[1] = accuracy</code></pre>
+  <p>
+    And raw prediction:
+  </p>
+  <pre><code>float[][] logits = net.predict(testX);      // [n][10] probabilities
+int[] predicted   = net.predictClass(testX); // argmax class per sample</code></pre>
+
+  <h2>The <code>Metrics</code> class</h2>
+  <p>
+    <code>Metrics</code> builds DL4J-style evaluation reports from a confusion matrix.
+    <code>conf[trueLabel][predictedLabel]</code>.
+  </p>
+  <pre><code>import puretf.nn.Metrics;
+
+int[][] conf = new int[10][10];
+float[][] logits = net.predict(testX);
+for (int i = 0; i &lt; testX.length; i++) {
+    int p = Metrics.argmax(logits[i]);
+    conf[testY[i]][p]++;
+}
+
+double accuracy = (double) correct / testY.length;
+Metrics.printReport(loss, accuracy, conf, CLASS_NAMES);
+Metrics.printDl4jMatrix(conf);</code></pre>
+
+  <p><code>printReport</code> prints, all in one:</p>
+  <ul>
+    <li>Overall loss, accuracy, macro precision / recall / F1</li>
+    <li>The full confusion matrix <code>conf[true][pred]</code></li>
+    <li>Per-class precision, recall, F1 and support</li>
+  </ul>
+
+  <h2>Interpreting the numbers</h2>
+  <table>
+    <tr><th>Metric</th><th>Meaning</th></tr>
+    <tr><td>Accuracy</td><td>fraction of all predictions that are correct</td></tr>
+    <tr><td>Precision (per class)</td><td>of the items predicted as class C, how many really were C</td></tr>
+    <tr><td>Recall (per class)</td><td>of the actual class-C items, how many were found</td></tr>
+    <tr><td>F1</td><td>harmonic mean of precision and recall</td></tr>
+    <tr><td>Support</td><td>number of true examples of that class</td></tr>
+  </table>
+  <div class="note">
+    <b>Confusion matrices show failure patterns.</b> In Fashion-MNIST the classic error is
+    <em>shirt</em> being confused with <em>pullover</em> / <em>t-shirt</em> / <em>coat</em>
+    — the diagonal will be lower for those classes. Looking at where the off-diagonal mass
+    sits tells you <em>what</em> the model is mistaking and why.
+  </div>
+
+  <h2>One method that reports + charts</h2>
+  <p>
+    The library ships <code>Metrics.printReportWithChart(...)</code> which prints the full
+    report <em>and</em> renders a pure-Java2D prediction grid (one sample per class, with
+    the true label, predicted label, and per-class accuracy % under each image).
+  </p>
+  <pre><code>Metrics.printReportWithChart(loss, accuracy, conf, CLASS_NAMES,
+        testX, 28, testY, predicted,
+        "Fashion-MNIST - one sample per class",
+        true,                       // show a window
+        "target/fashion-eval.png"); // also write a PNG</code></pre>
+  <p>
+    "One sample per class" means it picks the first test image of each of the 10 classes
+    and shows the model's prediction + that class's accuracy underneath. This is a great
+    visual sanity check: correct cases are black/red labels, correct ones green, and the
+    class accuracy % sits right under each image.
+  </p>
+
+  <h2>The evaluation grid layout</h2>
+  <ul>
+    <li>Images are drawn <b>5 per row</b> (2 rows for 10 classes).</li>
+    <li>Each image is scaled up and given <b>rounded corners</b>.</li>
+    <li>Under each tile: the <b>true label</b>, the <b>predicted label</b>, and the
+        <b>class accuracy %</b>.</li>
+    <li>Rendered with plain Java2D — no JFreeChart dependency.</li>
+  </ul>
+
+  <p><a href="ch7-persistence.html">Next: Chapter 7 — Saving &amp; loading →</a></p>
+</main>
+<footer>pure-tf-java book · Chapter 6</footer>
+</body>
+</html>
+

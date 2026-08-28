@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ch.10 · Generative &amp; sequence models</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site">
+  <h1>Neural Networks in Pure Java</h1>
+  <span class="sub">Chapter 10 · GANs, RNNs &amp; NLP with the raw engine</span>
+<nav class="chapters">
+  <ol>
+    <li><a href="index.html">Home</a></li>
+    <li><a href="ch1-getting-started.html">1. Getting started</a></li>
+    <li><a href="ch2-tensors.html">2. Tensors</a></li>
+    <li><a href="ch3-layers.html">3. Layers</a></li>
+    <li><a href="ch4-training.html">4. Training</a></li>
+    <li><a href="ch5-optimizers-lr.html">5. Optimizers &amp; LR</a></li>
+    <li><a href="ch6-evaluation.html">6. Evaluation</a></li>
+    <li><a href="ch7-persistence.html">7. Save &amp; load</a></li>
+    <li><a href="ch8-putting-it-together.html">8. End to end</a></li>
+    <li><a href="ch9-advanced-layers.html">9. Advanced layers</a></li>
+    <li><a href="ch10-sequence-generative.html">10. Generative &amp; sequence</a></li>
+    <li><a href="ch11-rnn-lstm-nlp.html">11. RNN, LSTM &amp; NLP</a></li>
+  </ol>
+</nav></header><main>
+  <h2>Can this engine build GANs, RNNs and NLP projects?</h2>
+  <p>
+    Yes. Chapters 1–8 built a solid classifier stack; this chapter collects the few
+    extra pieces a generative / sequence workflow needs, and shows two working demos.
+    Run them with:
+  </p>
+  <pre><code>run.cmd gan          # Generative Adversarial Network on 2D data
+run.cmd lstm-text    # character-level LSTM language model</code></pre>
+
+  <h2>1 · A BCE loss for GANs</h2>
+  <p>
+    GAN discriminators use <em>binary</em> cross-entropy (real vs fake). The engine's
+    <code>Tensor.bce(target)</code> fuses a sigmoid with the log for numerical stability
+    (the standard <code>max(0,z) - z·y + log(1 + e<sup>-|z|</sup>)</code>), and is verified
+    against finite differences by <code>GradCheck</code>.
+  </p>
+  <pre><code>// D(x) outputs a single logit in [-inf, inf]; bce turns it into a probability cost
+Tensor dLoss = realLogit.bce(ones)        // want real -&gt; 1
+               .broadcastAdd(fakeLogit.bce(zeros));  // want fake -&gt; 0</code></pre>
+
+  <h2>2 · Gradient clipping</h2>
+  <p>
+    RNNs and GANs are notoriously unstable to train; gradient clipping tames exploding
+    gradients. The engine offers both a per-tensor clip and a global clip over a whole
+    model:
+  </p>
+  <pre><code>loss.backward();
+net.clipGradNorm(1f);       // scale all grads so their L2 norm &lt;= 1
+opt.step(net.params());</code></pre>
+  <p>(<code>Tensor.clipGrad(maxNorm)</code> clips a single tensor instead.)</p>
+
+  <h2>3 · Random tensors for latent code</h2>
+  <p>Generative models need to sample noise. The engine provides:</p>
+  <table>
+    <tr><th>Helper</th><th>Returns</th></tr>
+    <tr><td><code>Tensor.randn(rnd, std, shape)</code></td><td>Gaussian noise (latent vectors)</td></tr>
+    <tr><td><code>Tensor.rand(rnd, shape)</code></td><td>uniform in [0,1)</td></tr>
+    <tr><td><code>Tensor.randInt(rnd, highest, shape)</code></td><td>integers in [0, highest)</td></tr>
+  </table>
+
+  <h2>4 · The GAN demo</h2>
+  <p>
+    <code>GanDemo</code> learns a 2D distribution made of four well-separated Gaussians.
+    The generator <code>G: z&rarr;x</code> maps noise to points (tanh output, rescaled to the
+    data range); the discriminator <code>D: x&rarr;logit</code> tells real from fake. The
+    adversarial loop alternates <code>D</code> and <code>G</code> gradient steps on
+    <code>bce</code> losses, with <code>clipGradNorm</code> for stability.
+  </p>
+  <pre><code>Sequential G = new Sequential()           // generator
+        .add(new Dense(32, Dense.Act.RELU))
+        .add(new Dense(32, Dense.Act.RELU))
+        .add(new Dense(2, Dense.Act.TANH));
+
+Sequential D = new Sequential()           // discriminator
+        .add(new Dense(32, Dense.Act.NONE))
+        .add(new LeakyReLU(0.2f))
+        .add(new Dense(1));               // logit -&gt; bce
+
+// ...loop: D on real+fake, then G to fool D (see puretf.demo.GanDemo)...
+// final score: generated points landing near a real cluster (&gt;~85% on this task)</code></pre>
+  <p>
+    The demo ends by counting how many freshly generated points land close to a real
+    cluster — a simple but honest measure that the generator learned the target
+    distribution (e.g. 357/400 ≈ 89% vs ~5% by chance).
+  </p>
+
+  <h2>5 · The LSTM text demo</h2>
+  <p>
+    <code>LstmTextDemo</code> is a character-level language model. It needs three small
+    helpers the library now ships:
+  </p>
+  <ul>
+    <li><b><code>Tokenizer</code></b> — builds a character vocabulary from a corpus and
+        converts text &harr; token ids (the embedding input).</li>
+    <li><b><code>Sampler</code></b> — <code>categorical(rnd, logits, temperature)</code>
+        draws the next character; low temperature = peaky/deterministic, high = random.</li>
+    <li>A <b>sequence training loop</b> feeding <code>[1, T]</code> ids through the body.
+    </li>
+  </ul>
+  <pre><code>Sequential body = new Sequential()
+        .add(new Embedding(vocab, embedDim))
+        .add(new LSTM(lstm, true));       // emit every timestep: [1, T, lstm]
+Sequential head = new Sequential().add(new Dense(vocab));
+
+// [1,T] ids -&gt; [1,T,lstm] -&gt; reshape [T,lstm] -&gt; head [T,vocab]
+Tensor logits = head.forward(body.forward(Tensor.of(floats(data), 1, T)).reshape(T, lstm));
+Tensor loss  = Tensor.softmaxCE(logits, target);   // target = chars shifted by one</code></pre>
+  <p>
+    After a few hundred steps the tiny net pushes loss below 0.01 and generates text; at
+    temperature 0.4 it reproduces the learned phrase almost exactly, and at 1.0 it drifts
+    into plausible "hallucinations" that still respect the phrase's structure:
+  </p>
+  <pre><code>temp 0.4: to be or not to be, that is the question. to be or not to be, that is...
+temp 1.0: to be or not to b,, that is the question. to be or not to be, that is...</code></pre>
+
+  <h2>6 · What extends to bigger projects</h2>
+  <div class="note">
+    <b>Building blocks are real, glue is on you.</b> The layers, losses, clipping, tokenizer
+    and sampler give you working LSTM/GRU/RNN networks, transformer heads, generators and
+    discriminators in pure Java. For a larger NLP project you'd still add batching over
+    many sequences (the <code>Dataset</code> helper behind Chapter 4), attention masking for
+    variable lengths, and your own word tokenizer on top of the char one — the pieces are
+    all here to compose.
+  </div>
+
+  <p><a href="ch9-advanced-layers.html">← Chapter 9 · Advanced layers</a> &mdash; or
+     <a href="index.html">back to the contents</a></p>
+</main>
+<footer>pure-tf-java book · Chapter 10</footer>
+</body>
+</html>
+

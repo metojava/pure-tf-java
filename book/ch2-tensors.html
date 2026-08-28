@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ch.2 · Tensors &amp; autograd</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site">
+  <h1>Neural Networks in Pure Java</h1>
+  <span class="sub">Chapter 2 · Tensors &amp; autograd</span>
+<nav class="chapters">
+  <ol>
+    <li><a href="index.html">Home</a></li>
+    <li><a href="ch1-getting-started.html">1. Getting started</a></li>
+    <li><a href="ch2-tensors.html">2. Tensors</a></li>
+    <li><a href="ch3-layers.html">3. Layers</a></li>
+    <li><a href="ch4-training.html">4. Training</a></li>
+    <li><a href="ch5-optimizers-lr.html">5. Optimizers &amp; LR</a></li>
+    <li><a href="ch6-evaluation.html">6. Evaluation</a></li>
+    <li><a href="ch7-persistence.html">7. Save &amp; load</a></li>
+    <li><a href="ch8-putting-it-together.html">8. End to end</a></li>
+    <li><a href="ch9-advanced-layers.html">9. Advanced layers</a></li>
+    <li><a href="ch10-sequence-generative.html">10. Generative &amp; sequence</a></li>
+    <li><a href="ch11-rnn-lstm-nlp.html">11. RNN, LSTM &amp; NLP</a></li>
+  </ol>
+</nav></header><main>
+  <h2>The <code>Tensor</code> class</h2>
+  <p>
+    A tensor is just a flat <code>float[]</code> plus its <code>shape</code> (an
+    <code>int[]</code> of per-axis sizes). Row-major layout means the last axis
+    varies fastest. Shapes encode everything: a batch of 128 grayscale 28×28 images is
+    <code>[128, 28, 28]</code>; after flattening it's <code>[128, 784]</code>; weights of
+    a dense layer are <code>[fanIn, units]</code>.
+  </p>
+  <pre><code>public final float[] data;    // flat values
+public final int[]   shape;   // e.g. {2, 3}</code></pre>
+  <h3>Creating tensors</h3>
+  <pre><code>Tensor x   = Tensor.of(flatPixels, 128, 28, 28); // input, no gradient
+Tensor w   = Tensor.param(weights, 784, 128);      // trainable parameter
+Tensor wg  = Tensor.glorot(new Random(7), 784, 128, 784, 128); // init
+Tensor wn  = Tensor.randn(new Random(7), 0.01f, 784, 128);     // gaussian</code></pre>
+  <ul>
+    <li><code>Tensor.of(...)</code> → a <em>leaf</em> that does <strong>not</strong> track gradient (inputs/constants).</li>
+    <li><code>Tensor.param(...)</code> → a trainable leaf (its gradient is updated during backprop).</li>
+    <li><code>Tensor.glorot</code> / <code>Tensor.randn</code> → parameter tensors with good default init.</li>
+  </ul>
+
+  <h2>The forward ops</h2>
+  <p>
+    Operations take one or more tensors and return a new tensor. They look exactly like
+    the math you'd expect:
+  </p>
+  <pre><code>x.matmul(w)          // tensor product / dense layer pre-activation
+x.addBias(b)         // x + b (broadcast across the batch)
+x.mul(y)             // element-wise multiply (e.g. dropout mask, attention)
+x.relu() / tanh() / sigmoid()
+x.softmax()          // over the last axis
+x.reshape(-1, 784)   // reshape; one -1 is inferred
+x.permute(0, 2, 1)   // transpose axes
+x.meanAxis(0) / x.sumAxis(0)
+x.softmaxCE(labels)  // fused softmax + cross-entropy -> scalar loss</code></pre>
+  <p>
+    Because these are real Java methods, you can trace them to the actual math. For
+    example the dense-layer pre-activation is literally:
+  </p>
+  <pre><code>// out[i][j] = sum_k x[i][k] * w[k][j]
+for (i) for (k) { float a = x[i*m+k]; if (a==0) continue;
+  for (j) out[i*n+j] += a * w[k*n+j]; }</code></pre>
+
+  <h2>The autograd tape</h2>
+  <p>
+    This is the heart of the library. Each produced tensor registers a
+    <em>backprop closure</em> that knows how to push a gradient back to its parents.
+    A static <code>TAPE</code> records creation order.
+  </p>
+  <pre><code>// inside Tensor
+private static final List&lt;Tensor&gt; TAPE = new ArrayList&lt;&gt;();
+public static void resetGraph() { TAPE.clear(); }
+
+public void backward() {
+    grad[0] = 1f;                    // loss gradient = 1
+    for (int i = TAPE.size()-1; i &gt;= 0; i--)   // reverse order
+        if (TAPE.get(i).backprop != null) TAPE.get(i).backprop.run();
+}</code></pre>
+  <p>
+    So <strong>forward</strong> builds the graph and computes values; <strong>backward</strong>
+    walks the tape in reverse, calling each closure to scatter gradients. This is exactly
+    reverse-mode automatic differentiation (backpropagation).
+  </p>
+
+  <h2>A tiny training step by hand</h2>
+  <p>To see it, we can train one parameter the long way:</p>
+  <pre><code>Tensor.resetGraph();
+
+Tensor x = Tensor.of(new float[]{1, 2, 3}, 1, 3);   // (3,)
+Tensor w = Tensor.param(new float[]{0.5f, 0.5f, 0.5f}, 3);  // (3,)
+Tensor b = Tensor.param(new float[]{0f}, 1);
+
+Tensor pred  = x.mul(w).sumAxis(1).addBias(b);   // scalar
+Tensor loss  = pred.mse(Tensor.of(new float[]{4f}, 1));
+
+for (Tensor p : List.of(w, b)) p.zeroGrad();     // clear old grads
+loss.backward();                                  // fill in w.grad, b.grad
+
+// One SGD step:
+Tensor.sgd(List.of(w, b), 0.05f);</code></pre>
+  <p>
+    After <code>loss.backward()</code>, <code>w.grad</code> holds
+    <code>∂loss/∂w</code> computed by the tape — no manual chain rule needed.
+  </p>
+
+  <div class="note">
+    <b>How it stays fast.</b> The heavy inner loops (matmul, im2col, pooling) are split
+    across the CPU cores by the <code>Par</code> helper, partitioning output slices so
+    each thread writes disjoint data. The autograd tape itself stays strictly sequential.
+  </div>
+
+  <h2>Vision ops (a preview)</h2>
+  <p>
+    The <code>Tensor</code> class also contains convolution building blocks:
+    <code>im2col</code>, <code>pad2d</code>, <code>maxPool2d</code>,
+    <code>avgPool2d</code>, <code>upsample2d</code>, and <code>bmm</code> (batched
+    matmul). These power the CNN family of layers covered later in the series.
+  </p>
+
+  <h2>Verifying gradients</h2>
+  <p>
+    The autograd engine gives you gradients for free — but the best habit is proving they're
+    correct. <code>GradChecker</code> compares the analytic gradients from
+    <code>backward()</code> with central finite differences, for any pure function of
+    parameter tensors. Verify a whole op, or a custom layer's core computation:
+  </p>
+  <pre><code>import puretf.check.GradChecker;
+
+// does x @ W + b then silu have correct gradients? check every weight element
+GradChecker.verify("my layer",
+        ps -> GradChecker.sumAll(
+                ps[0].matmul(ps[1]).addBias(ps[2]).silu()),
+        GradChecker.randn(8, 5),   // x
+        GradChecker.randn(5, 3),   // W
+        GradChecker.randn(3));     // b
+// "ok" printed; throws AssertionError on a mismatch</code></pre>
+  <p>
+    The built-in <code>GradCheck</code> utility runs this across every core op
+    (<code>run.cmd gradcheck</code>) — a regression net that would catch a broken
+    backprop immediately.
+  </p>
+
+  <p><a href="ch3-layers.html">Next: Chapter 3 — Layers &amp; Sequential →</a></p>
+</main>
+<footer>pure-tf-java book · Chapter 2</footer>
+</body>
+</html>
+

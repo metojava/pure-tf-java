@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ch.1 · Getting started</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site">
+  <h1>Neural Networks in Pure Java</h1>
+  <span class="sub">Chapter 1 · Getting started</span>
+<nav class="chapters">
+  <ol>
+    <li><a href="index.html">Home</a></li>
+    <li><a href="ch1-getting-started.html">1. Getting started</a></li>
+    <li><a href="ch2-tensors.html">2. Tensors</a></li>
+    <li><a href="ch3-layers.html">3. Layers</a></li>
+    <li><a href="ch4-training.html">4. Training</a></li>
+    <li><a href="ch5-optimizers-lr.html">5. Optimizers &amp; LR</a></li>
+    <li><a href="ch6-evaluation.html">6. Evaluation</a></li>
+    <li><a href="ch7-persistence.html">7. Save &amp; load</a></li>
+    <li><a href="ch8-putting-it-together.html">8. End to end</a></li>
+    <li><a href="ch9-advanced-layers.html">9. Advanced layers</a></li>
+    <li><a href="ch10-sequence-generative.html">10. Generative &amp; sequence</a></li>
+    <li><a href="ch11-rnn-lstm-nlp.html">11. RNN, LSTM &amp; NLP</a></li>
+  </ol>
+</nav></header><main>
+  <h2>Why build neural networks in pure Java?</h2>
+  <p>
+    Normally you'd say "just use TensorFlow". But this project deliberately does the
+    opposite: it re-implements the fundamental pieces of deep learning as plain Java
+    classes you can open and read. The payoff is educational and practical:
+  </p>
+  <ul>
+    <li>No native DLLs, no GPU drivers, no heavy dependencies to install.</li>
+    <li>Every operation is a visible <code>for</code> loop over <code>float[]</code> arrays.</li>
+    <li>Training real models (Fashion-MNIST) happens on your laptop CPU in seconds.</li>
+    <li>You can step through training under a debugger to actually <em>see</em> backprop.</li>
+  </ul>
+
+  <h2>What you need</h2>
+  <ul>
+    <li><strong>Java 17 JDK</strong></li>
+    <li><strong>Maven 3.9+</strong></li>
+    <li>The <strong>Fashion-MNIST data files</strong> (4 gzip archives) in a folder</li>
+    <li>A 64-bit OS (more CPU cores = faster training)</li>
+  </ul>
+  <p>
+    No TensorFlow, no GPU, and — important — <strong>no JFreeChart</strong>. Charts are
+    drawn with plain Java2D. The library is 100% pure Java.
+  </p>
+
+  <h2>The project layout</h2>
+  <pre><code>pure-tf-java/src/main/java/puretf/
+├── Tensor.java              # the autograd tensor &amp; math ops
+├── Optim.java               # SGD / Momentum / RMSProp / Adam
+├── Par.java                 # parallel loop helper (multi-core)
+├── data/IdxDataset.java     # loads Fashion-MNIST IDX files
+├── nn/                      # layers, sequential models, metrics
+│   ├── Layer.java           # base class of all layers
+│   ├── Sequential.java      # stacks layers and runs training
+│   ├── Dense / Dropout / Flatten / Reshape ...
+│   └── Metrics / History / LrSchedule / EarlyStopping ...
+├── chart/                   # pure-Java2D PNG/window charts
+└── demo/                    # runnable Fashion-MNIST demos</code></pre>
+
+  <h2>Loading Fashion-MNIST</h2>
+  <p>
+    <code>IdxDataset</code> reads the standard IDX archives (the gzipped ones
+    <code>*-idx*-ubyte.gz</code>). It exposes two records:
+  </p>
+  <pre><code>Images(count, rows, cols, float[][] pixels)   // rows*cols values per image, 0..1
+Labels(count, int[] labels)                   // the class id per image</code></pre>
+  <pre><code>var trI = IdxDataset.loadImages(dir + "train-images-idx3-ubyte.gz");
+var trL = IdxDataset.loadLabels(dir + "train-labels-idx1-ubyte.gz");
+
+int n     = trI.count();      // 60000
+int rows  = trI.rows();       // 28
+float[] first = trI.pixels()[0];   // 784 values in [0,1]
+
+int label0 = trL.labels()[0]; // class of the first image</code></pre>
+
+  <h2>Your first model</h2>
+  <p>
+    A <code>Sequential</code> is a list of layers applied in order. Here is a minimal
+    classifier for Fashion-MNIST. Notice you never declare the input size — the first
+    batch of data teaches each layer its fan-in automatically.
+  </p>
+  <pre><code>import puretf.data.IdxDataset;
+import puretf.nn.*;
+
+var trI = IdxDataset.loadImages("..." + "train-images-idx3-ubyte.gz");
+var trL = IdxDataset.loadLabels("..." + "train-labels-idx1-ubyte.gz");
+var teI = IdxDataset.loadImages("..." + "t10k-images-idx3-ubyte.gz");
+var teL = IdxDataset.loadLabels("..." + "t10k-labels-idx1-ubyte.gz");
+
+Sequential net = new Sequential()
+        .add(new Flatten())
+        .add(new Dense(128, Dense.Act.RELU))
+        .add(new Dense(10));               // 10 classes, no activation
+
+History hist = net.fitHistory(trI.pixels(), trL.labels(), 10,
+        5,            // epochs
+        128,          // batch size
+        new Optim.Adam(0.0015f),
+        LrSchedule.cosine(0.0015f, 0.0002f, 5),
+        0f,           // validation split (0 = none)
+        null,         // no early stopping
+        true);        // print progress
+
+net.saveTo(Path.of("fashion-mlp.bin"));
+System.out.println("saved");</code></pre>
+  <p>
+    That's it. Five epochs on the full 60k set finish in well under a minute on a modern
+    CPU and reach roughly <strong>87–88% test accuracy</strong>.
+  </p>
+
+  <h2>Building and running</h2>
+  <pre><code>cd C:\Users\dell\Desktop\b\pure-tf-java
+mvn -q compile exec:java -Dexec.mainClass=puretf.demo.FashionMnistDemo</code></pre>
+
+  <div class="tip">
+    <b>True to its name.</b> Every number in the code is a plain <code>float</code> in a
+    plain <code>float[]</code>. There is nothing magical hidden behind a JNI call — the
+    whole engine is a few thousand lines of readable Java.
+  </div>
+
+  <p><a href="ch2-tensors.html">Next: Chapter 2 — Tensors &amp; autograd →</a></p>
+</main>
+<footer>pure-tf-java book · Chapter 1</footer>
+</body>
+</html>
+

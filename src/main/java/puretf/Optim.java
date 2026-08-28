@@ -1,0 +1,130 @@
+package puretf;
+
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Optimizers over a list of parameter tensors. Pure Java - the update rules
+ * read {@code grad} arrays and mutate {@code data} in place, exactly what the
+ * native bridge does via tensorAxpy inside TensorFlow land.
+ */
+public final class Optim {
+
+    private Optim() {}
+
+    /** Vanilla gradient descent: w -= lr * grad. */
+    public static void sgd(List<Tensor> params, float lr) {
+        for (Tensor p : params) {
+            if (p.grad == null) continue;
+            for (int i = 0; i < p.data.length; i++)
+                p.data[i] -= lr * p.grad[i];
+        }
+    }
+
+    /** Base helpers shared by stateful optimizers. */
+    public interface Stepper {
+        void step(List<Tensor> params);
+
+        /** Adjusts the base learning rate (used by {@code LrSchedule}). */
+        void setLr(float lr);
+    }
+
+    /** SGD with classical momentum: v = momentum*v - lr*g; w += v. */
+    public static final class Momentum implements Stepper {
+        private float lr;
+        private final float momentum;
+        private final Map<Tensor, float[]> vel = new IdentityHashMap<>();
+
+        public Momentum(float lr, float momentum) {
+            this.lr = lr;
+            this.momentum = momentum;
+        }
+
+        @Override public void setLr(float lr) { this.lr = lr; }
+
+        public void step(List<Tensor> params) {
+            for (Tensor p : params) {
+                if (p.grad == null) continue;
+                float[] v = vel.computeIfAbsent(p,
+                        k -> new float[p.data.length]);
+                for (int i = 0; i < p.data.length; i++) {
+                    v[i] = momentum * v[i] - lr * p.grad[i];
+                    p.data[i] += v[i];
+                }
+            }
+        }
+    }
+
+    /** RMSProp (Hinton 2012): w -= lr * g / sqrt(runningAvg(g^2) + eps). */
+    public static final class RMSProp implements Stepper {
+        private float lr;
+        private final float decay, eps;
+        private final Map<Tensor, float[]> avg = new IdentityHashMap<>();
+
+        public RMSProp(float lr) {
+            this(lr, 0.9f, 1e-8f);
+        }
+
+        public RMSProp(float lr, float decay, float eps) {
+            this.lr = lr;
+            this.decay = decay;
+            this.eps = eps;
+        }
+
+        @Override public void setLr(float lr) { this.lr = lr; }
+
+        public void step(List<Tensor> params) {
+            for (Tensor p : params) {
+                if (p.grad == null) continue;
+                float[] a = avg.computeIfAbsent(p,
+                        k -> new float[p.data.length]);
+                for (int i = 0; i < p.data.length; i++) {
+                    float g = p.grad[i];
+                    a[i] = decay * a[i] + (1 - decay) * g * g;
+                    p.data[i] -= lr * g / ((float) Math.sqrt(a[i]) + eps);
+                }
+            }
+        }
+    }
+
+    /** Adam with bias correction (Kingma & Ba, 2015). */
+    public static final class Adam implements Stepper {
+        private float lr;
+        private final float beta1, beta2, eps;
+        private final Map<Tensor, float[][]> state = new IdentityHashMap<>();
+        private int t = 0;
+
+        public Adam(float lr) {
+            this(lr, 0.9f, 0.999f, 1e-8f);
+        }
+
+        public Adam(float lr, float beta1, float beta2, float eps) {
+            this.lr = lr;
+            this.beta1 = beta1;
+            this.beta2 = beta2;
+            this.eps = eps;
+        }
+
+        @Override public void setLr(float lr) { this.lr = lr; }
+
+        public void step(List<Tensor> params) {
+            t++;
+            float bc1 = 1f - (float) Math.pow(beta1, t);
+            float bc2 = 1f - (float) Math.pow(beta2, t);
+            for (Tensor p : params) {
+                if (p.grad == null) continue;
+                float[][] st = state.computeIfAbsent(p,
+                        k -> new float[2][p.data.length]);
+                float[] m = st[0], v = st[1];
+                for (int i = 0; i < p.data.length; i++) {
+                    float g = p.grad[i];
+                    m[i] = beta1 * m[i] + (1 - beta1) * g;
+                    v[i] = beta2 * v[i] + (1 - beta2) * g * g;
+                    p.data[i] -= lr * (m[i] / bc1)
+                            / ((float) Math.sqrt(v[i] / bc2) + eps);
+                }
+            }
+        }
+    }
+}

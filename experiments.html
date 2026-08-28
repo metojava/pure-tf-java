@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fashion-MNIST MLP — Experiments</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 960px;
+         margin: 24px auto; padding: 0 16px; color: #1c1c1c; line-height: 1.5; }
+  h1 { border-bottom: 2px solid #222; padding-bottom: 8px; }
+  h2 { margin-top: 32px; color: #0b5394; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  th, td { border: 1px solid #bbb; padding: 8px 10px; text-align: left; }
+  th { background: #eef3f8; }
+  tr.best td { background: #e6f6e6; font-weight: 600; }
+  code { background: #f4f4f4; padding: 1px 5px; border-radius: 3px; }
+  .note { background: #fff8e6; border-left: 4px solid #e0a800; padding: 10px 14px; margin: 14px 0; }
+  pre { background: #f4f4f4; padding: 12px; border-radius: 6px; overflow-x: auto; }
+</style>
+</head>
+<body>
+
+<h1>Fashion-MNIST MLP — Optimizer / LR Experiments</h1>
+
+<p>All runs use the pure-Java autograd engine on an 8-core CPU. See
+"Project &amp; model under test" below for the architecture, project and dataset.</p>
+
+<div class="note">
+<b>Headline finding:</b> learning rate and schedule change <b>accuracy and loss</b>
+but have essentially <b>no effect on speed</b> — every config does the same number of
+floating-point operations per epoch. Speed is fixed by the architecture and dataset size.
+</div>
+
+<h2>Project &amp; model under test</h2>
+<p>This document describes experiments we ran in the <b>pure-tf-java</b> project
+(<code>C:\Users\dell\Desktop\b\pure-tf-java</code>) — a from-scratch, pure-Java
+autograd engine with <b>no TensorFlow and no JFreeChart</b> (visualization is plain
+Java2D). The entry point is <code>puretf.demo.CnnFashionMnistDemo</code>
+(kept its historical "Cnn" name — it currently runs an MLP, the CNN was commented out).</p>
+
+<p>Architecture (batch size 128, Adam optimizer):</p>
+<pre>
+Flatten                     // 28x28 image -> 784 features
+   -> Dense(128, relu)
+   -> Dropout(0.2)
+   -> Dense(64, relu)
+   -> Dense(10)             // 10 logits (classes)
+</pre>
+<p>Dataset: Fashion-MNIST — 60 000 train / 10 000 test, 28×28 grayscale images in
+10 classes (T-shirt, Trouser, Pullover, Dress, Coat, Sandal, Shirt, Sneaker, Bag,
+Ankle boot).</p>
+
+<h3>What "cosine" (cosine annealing) does</h3>
+<p>The LR schedule is <code>LrSchedule.cosine(maxLr, minLr, totalEpochs)</code> in
+<code>puretf.nn.LrSchedule.java</code>. It decays the learning rate along a cosine
+curve over the epochs:</p>
+<pre>
+lr(epoch) = minLr + 0.5 * (maxLr - minLr) * (1 + cos(pi * epoch / (totalEpochs - 1)))
+</pre>
+<ul>
+  <li><b>Start</b> (early epochs): near <code>maxLr</code> — big weight updates, so the
+      net makes fast initial progress.</li>
+  <li><b>Middle</b>: the step size decays smoothly.</li>
+  <li><b>End</b> (final epoch): near <code>minLr</code> — tiny updates, so the optimizer
+      "settles" cleanly into a good minimum instead of overshooting.</li>
+</ul>
+<p><b>Why it helps Fashion-MNIST here:</b> it combines fast early convergence with a
+fine final settling, which is why cosine beat a constant LR
+(85.15% vs 81.85% test accuracy on the subset). Conceptually it trades off the same way
+in any dataset with a smooth, non-convex loss landscape — start big, anneal small.</p>
+
+<h2>Environment</h2>
+<ul>
+  <li>Java 17, pure Java2D (no JFreeChart), TensorFlow-free autograd</li>
+  <li>8 logical CPU cores; parallel matmul threshold lowered to 64k ops</li>
+  <li>Data: Fashion-MNIST, 60k train / 10k test 28×28</li>
+  <li>Epoch timing reported as seconds per epoch</li>
+</ul>
+
+<h2>Experiment 1 — Learning rate sweep (cosine schedule, 12k subset, 3 epochs)</h2>
+<p>Everything below uses <code>--fast 3 --schedule=cosine</code>.</p>
+<table>
+  <tr><th>Learning rate</th><th>s/epoch</th><th>final train loss</th><th>test accuracy</th></tr>
+  <tr><td>0.0005</td><td>1.2</td><td>0.6064</td><td>80.25%</td></tr>
+  <tr><td>0.001</td><td>1.1</td><td>0.5185</td><td>83.15%</td></tr>
+  <tr><td>0.0015 (old default)</td><td>1.0</td><td>0.4744</td><td>84.40%</td></tr>
+  <tr><td>0.003</td><td>1.0</td><td>0.4388</td><td>85.00%</td></tr>
+  <tr class="best"><td>0.005</td><td>1.0</td><td>0.4312</td><td>85.35%</td></tr>
+</table>
+<p><b>What it shows:</b> with only 3 epochs, a larger LR lets the deeper net (with dropout)
+descend faster — lower final loss, higher accuracy. LR above 0.005 was not explored; too
+high an LR would eventually diverge.</p>
+
+<h2>Experiment 2 — Schedule comparison (LR 0.005, 12k subset, 3 epochs)</h2>
+<table>
+  <tr><th>Schedule</th><th>s/epoch</th><th>final train loss</th><th>test accuracy</th></tr>
+  <tr><td>constant</td><td>1.1</td><td>0.4805</td><td>81.85%</td></tr>
+  <tr><td>step (halve /3 epochs)</td><td>1.1</td><td>0.4458</td><td>83.15%</td></tr>
+  <tr><td>exponential (decay 0.7)</td><td>1.0</td><td>0.4460</td><td>83.25%</td></tr>
+  <tr class="best"><td>cosine</td><td>1.0</td><td>0.4368</td><td>85.15%</td></tr>
+</table>
+<p><b>What it shows:</b> annealing the LR (cosine) lets the optimizer "settle", beating
+constant LR. Speed is identical across schedules (same FLOPs).</p>
+
+<h2>Experiment 3 — Best config on the full 60k set (LR 0.005, cosine, 5 epochs)</h2>
+<table>
+  <tr><th>Epoch</th><th>loss</th><th>train accuracy</th><th>time</th></tr>
+  <tr><td>1</td><td>0.5604</td><td>79.74%</td><td>4.6 s</td></tr>
+  <tr><td>2</td><td>0.4203</td><td>84.53%</td><td>4.2 s</td></tr>
+  <tr><td>3</td><td>0.3764</td><td>86.20%</td><td>4.0 s</td></tr>
+  <tr><td>4</td><td>0.3361</td><td>87.51%</td><td>3.8 s</td></tr>
+  <tr><td>5</td><td>0.3172</td><td>88.28%</td><td>3.8 s</td></tr>
+</table>
+<p><b>Final test accuracy: 87.48%</b> at ~4.1 s/epoch. Loss falls monotonically and
+training accuracy climbs every epoch — the model is still learning at epoch 5, so more
+epochs would push accuracy higher.</p>
+
+<h2>Speed analysis — what causes what</h2>
+<table>
+  <tr><th>Factor</th><th>Effect on speed</th><th>Effect on accuracy</th></tr>
+  <tr><td>Learning rate</td><td>None</td><td>Large LR converges faster (to a point); too large diverges</td></tr>
+  <tr><td>LR schedule</td><td>None</td><td>Annealing (cosine) settles better than constant</td></tr>
+  <tr><td>Dataset size (12k vs 60k)</td><td>~5× more time</td><td>More data → better generalization</td></tr>
+  <tr><td>Network depth / width</td><td>More FLOPs → slower</td><td>More capacity → can learn more (needs epochs to realize)</td></tr>
+  <tr><td>Dropout</td><td>Negligible (mask only)</td><td>Regularizes the deeper net → better test accuracy</td></tr>
+  <tr><td>Parallelism threshold (64k)</td><td>~25% faster</td><td>None (same arithmetic)</td></tr>
+</table>
+
+<h2>How to reproduce</h2>
+<pre>
+cd C:\Users\dell\Desktop\b\pure-tf-java
+mvn -q compile exec:java -Dexec.mainClass=puretf.demo.CnnFashionMnistDemo \
+    --lr=0.005 --schedule=cosine 5
+</pre>
+<p>Flags supported by the demo: <code>&lt;epochs&gt;</code> (default 5),
+<code>--fast</code> (12k/2k subset), <code>--nochart</code> (no GUI window),
+<code>--lr=&lt;value&gt;</code>, <code>--schedule=cosine|constant|step|exponential</code>.
+Each run prints a <code>RESULT</code> line for easy aggregation.</p>
+
+<h2>Conclusion</h2>
+<ul>
+  <li><b>Best setting found:</b> <code>LR = 0.005</code> with <code>cosine</code> schedule.</li>
+  <li><b>Accuracy improves</b> with the higher LR (85.35% vs 80.25% on the subset; 87.48% on full 60k).</li>
+  <li><b>Speed is unchanged</b> by the optimizer — it's driven purely by architecture + data size.</li>
+</ul>
+
+</body>
+</html>

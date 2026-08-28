@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ch.8 · Putting it together</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site">
+  <h1>Neural Networks in Pure Java</h1>
+  <span class="sub">Chapter 8 · Putting it together</span>
+<nav class="chapters">
+  <ol>
+    <li><a href="index.html">Home</a></li>
+    <li><a href="ch1-getting-started.html">1. Getting started</a></li>
+    <li><a href="ch2-tensors.html">2. Tensors</a></li>
+    <li><a href="ch3-layers.html">3. Layers</a></li>
+    <li><a href="ch4-training.html">4. Training</a></li>
+    <li><a href="ch5-optimizers-lr.html">5. Optimizers &amp; LR</a></li>
+    <li><a href="ch6-evaluation.html">6. Evaluation</a></li>
+    <li><a href="ch7-persistence.html">7. Save &amp; load</a></li>
+    <li><a href="ch8-putting-it-together.html">8. End to end</a></li>
+    <li><a href="ch9-advanced-layers.html">9. Advanced layers</a></li>
+    <li><a href="ch10-sequence-generative.html">10. Generative &amp; sequence</a></li>
+    <li><a href="ch11-rnn-lstm-nlp.html">11. RNN, LSTM &amp; NLP</a></li>
+  </ol>
+</nav></header><main>
+  <h2>A complete program</h2>
+  <p>
+    This is the real <code>CnnFashionMnistDemo</code> minus the chart, rewritten to be
+    self-contained: load → build → train (Adam + cosine) → evaluate → report → save.
+    It's the full MLP we benchmarked.
+  </p>
+  <pre><code>import java.nio.file.Path;
+import puretf.Optim;
+import puretf.data.IdxDataset;
+import puretf.nn.*;
+
+public final class MlpHalfMNIST {
+
+    private static final String[] NAMES = {
+        "T-shirt", "Trouser", "Pullover", "Dress", "Coat",
+        "Sandal", "Shirt", "Sneaker", "Bag", "Ankle boot"
+    };
+
+    public static void main(String[] args) throws Exception {
+        String dir = "C:\\Users\\dell\\Desktop\\data\\fashion";
+
+        // 1. Load data
+        var trI = IdxDataset.loadImages(dir + "train-images-idx3-ubyte.gz");
+        var trL = IdxDataset.loadLabels(dir + "train-labels-idx1-ubyte.gz");
+        var teI = IdxDataset.loadImages(dir + "t10k-images-idx3-ubyte.gz");
+        var teL = IdxDataset.loadLabels(dir + "t10k-labels-idx1-ubyte.gz");
+        System.out.println("loaded " + trI.count() + " train / " + teI.count() + " test");
+
+        // 2. Build the model (slightly complex MLP + dropout)
+        Sequential net = new Sequential()
+                .add(new Flatten())
+                .add(new Dense(128, Dense.Act.RELU))
+                .add(new Dropout(0.2f))
+                .add(new Dense(64, Dense.Act.RELU))
+                .add(new Dense(10));
+
+        // 3. Train with Adam + cosine annealing
+        History hist = net.fitHistory(trI.pixels(), trL.labels(), 10,
+                5, 128,
+                new Optim.Adam(0.005f),
+                LrSchedule.cosine(0.005f, 0.0007f, 5),
+                0f, null, true);
+
+        // 4. Evaluate + build a confusion matrix
+        double[] eval = net.evaluate(teI.pixels(), teL.labels(), 10);
+        int[][] conf = new int[10][10];
+        float[][] logits = net.predict(teI.pixels());
+        for (int i = 0; i &lt; teI.count(); i++) {
+            int p = Metrics.argmax(logits[i]);
+            conf[teL.labels()[i]][p]++;
+        }
+
+        // 5. DL4J-style report
+        Metrics.printReport(eval[0], eval[1], conf, NAMES);
+
+        // 6. Save
+        net.saveTo(Path.of("fashion-mlp.bin"));
+        System.out.println("saved to fashion-mlp.bin");
+    }
+}</code></pre>
+  <p>
+    Expected outcome on the full set (5 epochs, LR 0.005, cosine): about
+    <strong>87–88% test accuracy</strong> at ~4 s/epoch, memory footprint tiny.
+  </p>
+
+  <h2>The same program, condensed to what matters</h2>
+  <pre><code>var trI = IdxDataset.loadImages(dir + "train-images-idx3-ubyte.gz");
+var trL = IdxDataset.loadLabels(dir + "train-labels-idx1-ubyte.gz");
+
+Sequential net = new Sequential()
+        .add(new Flatten())
+        .add(new Dense(128, Dense.Act.RELU))
+        .add(new Dense(10));
+
+History h = net.fitHistory(trI.pixels(), trL.labels(), 10,
+        5, 128,
+        new Optim.Adam(0.005f),
+        LrSchedule.cosine(0.005f, 0.0007f, 5),
+        0f, null, true);
+
+net.saveTo(Path.of("fashion-mlp.bin"));</code></pre>
+
+  <h2>API quick reference</h2>
+  <h3>Data</h3>
+  <table>
+    <tr><th>API</th><th>Purpose</th></tr>
+    <tr><td><code>IdxDataset.loadImages(path)</code></td><td>returns <code>Images(count, rows, cols, pixels)</code></td></tr>
+    <tr><td><code>IdxDataset.loadLabels(path)</code></td><td>returns <code>Labels(count, labels)</code></td></tr>
+  </table>
+  <h3>Model construction</h3>
+  <table>
+    <tr><th>API</th><th>Purpose</th></tr>
+    <tr><td><code>new Sequential().add(layer)...</code></td><td>chain layers in order</td></tr>
+    <tr><td><code>Dense(units, Act.RELU|TANH|SIGMOID|NONE)</code></td><td>fully-connected layer</td></tr>
+    <tr><td><code>Dropout(p)</code></td><td>dropout for regularization</td></tr>
+    <tr><td><code>Flatten / Reshape(...)</code></td><td>shape manipulation</td></tr>
+    <tr><td><code>build(inputDim)</code></td><td>force lazy weight init (like Keras <code>build</code>)</td></tr>
+    <tr><td><code>summary()</code></td><td>print param counts per layer + total</td></tr>
+  </table>
+  <h3>Data helpers</h3>
+  <table>
+    <tr><th>API</th><th>Purpose</th></tr>
+    <tr><td><code>new Dataset(X, Y)</code></td><td>wrap features + labels</td></tr>
+    <tr><td><code>ds.split(frac)</code> / <code>ds.shuffle(seed)</code></td><td>train/val split; seeded shuffle (views, no copies)</td></tr>
+    <tr><td><code>ds.batches(n)</code></td><td>iterate mini-batches of <code>x()</code>/<code>y()</code></td></tr>
+    <tr><td><code>ds.subsample(k)</code></td><td>evenly-spread subset for fast experiments</td></tr>
+  </table>
+  <h3>Training</h3>
+  <table>
+    <tr><th>API</th><th>Purpose</th></tr>
+    <tr><td><code>fitClassifier(X, Y, classes, epochs, batch, lr, verbose)</code></td><td>quick train, returns result</td></tr>
+    <tr><td><code>fitHistory(X, Y, classes, epochs, batch, opt, sched, valSplit, earlyStop, verbose)</code></td><td>full control, returns <code>History</code></td></tr>
+    <tr><td><code>evaluate(X, Y, classes)</code></td><td><code>double[]{loss, acc}</code></td></tr>
+    <tr><td><code>new Optim.Adam(lr)</code> / <code>Momentum</code> / <code>RMSProp</code></td><td>optimizers</td></tr>
+    <tr><td><code>LrSchedule.cosine / constant / step / exponential</code></td><td>LR schedules</td></tr>
+  </table>
+  <h3>Evaluation &amp; persistence</h3>
+  <table>
+    <tr><th>API</th><th>Purpose</th></tr>
+    <tr><td><code>Metrics.printReport(...)</code></td><td>scores + confusion + per-class metrics</td></tr>
+    <tr><td><code>Metrics.printDl4jMatrix(conf)</code></td><td>DL4J-style per-cell output</td></tr>
+    <tr><td><code>Metrics.printReportWithChart(...)</code></td><td>report + pure-Java2D prediction grid</td></tr>
+    <tr><td><code>Metrics.topKAccuracy(logits, Y, k)</code></td><td>fraction correct within top-k predicted</td></tr>
+    <tr><td><code>predict(X)</code> / <code>predictProb(X)</code></td><td>logits, or softmax class probabilities</td></tr>
+    <tr><td><code>predict(float[])</code> / <code>predictProb(float[])</code></td><td>single-sample inference</td></tr>
+    <tr><td><code>predictTopK(X, k)</code></td><td>top-k class indices per sample</td></tr>
+    <tr><td><code>getWeights()</code> / <code>setWeights(ws)</code></td><td>read / write all parameter values</td></tr>
+    <tr><td><code>copy()</code></td><td>independent deep clone (K-fold, warm restarts)</td></tr>
+    <tr><td><code>net.saveTo(Path)</code></td><td>save network (weights + structure)</td></tr>
+    <tr><td><code>Sequential.loadFrom(Path)</code></td><td>restore a saved network</td></tr>
+  </table>
+  <h3>Verifying custom layers</h3>
+  <table>
+    <tr><th>API</th><th>Purpose</th></tr>
+    <tr><td><code>GradChecker.check(name, build, seeds)</code></td><td>numeric vs analytic gradients; <code>verify</code> throws on failure</td></tr>
+    <tr><td><code>GradChecker.maxError(build, seeds)</code></td><td>largest |analytic − numeric| gap</td></tr>
+  </table>
+
+  <h2>Where to go next</h2>
+  <p>
+    The core library you've now seen supports everything in Chapters 1–8. The
+    <code>nn</code> package also ships advanced layers (CNN: <code>Conv2D</code>,
+    <code>MaxPool2D</code>; recurrent: <code>LSTM</code>, <code>GRU</code>, <code>RNN</code>;
+    attention: <code>SelfAttention</code>, <code>MultiHeadAttention</code>; plus
+    <code>Embedding</code>, <code>BatchNorm</code>, normalization and more) — see
+    <a href="ch9-advanced-layers.html">Chapter 9</a> for their constructors and example
+    stacks. The demos in <code>puretf.demo</code> show each one in action.
+  </p>
+  <div class="tip">
+    <b>Experiment freely.</b> Because everything is ordinary Java, running an experiment is
+    just changing a constructor argument and re-running <code>mvn compile exec:java</code>.
+    The demo also accepts <code>--lr=</code>, <code>--schedule=</code>, <code>--fast</code>
+    and <code>--nochart</code> flags so you can sweep hyperparameters from the command line.
+  </div>
+  <p><a href="index.html">← Back to the table of contents</a></p>
+</main>
+<footer>pure-tf-java book · Chapter 8 (end)</footer>
+</body>
+</html>
+

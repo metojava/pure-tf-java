@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ch.12 · Model Interchange (ONNX, SafeTensors, PyTorch, TensorFlow)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site">
+  <h1>Neural Networks in Pure Java</h1>
+  <span class="sub">Chapter 12 · Saving & loading models across frameworks</span>
+<nav class="chapters">
+  <ol>
+    <li><a href="index.html">Home</a></li>
+    <li><a href="ch1-getting-started.html">1. Getting started</a></li>
+    <li><a href="ch2-tensors.html">2. Tensors</a></li>
+    <li><a href="ch3-layers.html">3. Layers</a></li>
+    <li><a href="ch4-training.html">4. Training</a></li>
+    <li><a href="ch5-optimizers-lr.html">5. Optimizers & LR</a></li>
+    <li><a href="ch6-evaluation.html">6. Evaluation</a></li>
+    <li><a href="ch7-persistence.html">7. Save & load</a></li>
+    <li><a href="ch8-putting-it-together.html">8. End to end</a></li>
+    <li><a href="ch9-advanced-layers.html">9. Advanced layers</a></li>
+    <li><a href="ch10-sequence-generative.html">10. Generative & sequence</a></li>
+    <li><a href="ch11-rnn-lstm-nlp.html">11. RNN, LSTM & NLP</a></li>
+    <li><a href="ch12-model-interchange.html">12. Model interchange</a></li>
+  </ol>
+</nav></header><main>
+  <h2>Why model interchange?</h2>
+  <p>
+    No framework is an island. You may train in PyTorch, export to ONNX for inference,
+    hand a model to a TensorFlow pipeline, or share weights with a colleague using
+    SafeTensors. This chapter shows how to move models <b>into and out of</b> the
+    pure-tf-java engine using four standard formats, all implemented natively in
+    Java with zero external dependencies.
+  </p>
+
+  <h2>The interchange hub: <code>ModelBundle</code></h2>
+  <p>
+    Every import/export path goes through <code>puretf.serialize.ModelBundle</code>,
+    a framework-agnostic container holding:
+  </p>
+  <ul>
+    <li><b>Named tensors</b> — the weights and buffers, each with a name, shape,
+        dtype (F16/F32/F64/I8/I16/I32/I64/U8/BOOL), and data.</li>
+    <li><b>Layer manifest</b> — an ordered list of layer types and constructor
+        arguments so the exact <code>Sequential</code> architecture can be rebuilt.</li>
+    <li><b>Metadata</b> — input dimension, source format, and any format-specific
+        annotations.</li>
+  </ul>
+  <p>
+    The engine's <code>Sequential.saveBundle()</code> produces a bundle with all three
+    pieces. <code>Sequential.loadBundle(bundle)</code> rebuilds a <code>Sequential</code>
+    from the manifest and restores the weights by matching layer index + parameter index.
+  </p>
+
+  <h2>1 · SafeTensors (native read + write)</h2>
+  <p>
+    <a href="https://huggingface.co/docs/safetensors">SafeTensors</a> is a simple,
+    secure, dependency-free format: an 8-byte length prefix, a JSON header mapping
+    tensor names to dtype/shape/offsets, then the concatenated raw payloads
+    (little-endian, 8-byte aligned). It supports F16/F32/F64/I8/I16/I32/I64/U8/BOOL.
+  </p>
+
+  <h3>Java API</h3>
+  <pre><code>// write
+ModelBundle b = net.saveBundle();
+SafeTensors.write(Path.of("model.safetensors"), b);
+
+// read (weights only — no manifest)
+ModelBundle back = SafeTensors.read(Path.of("model.safetensors"));
+
+// full round-trip needs the engine bundle (has manifest + inputDim)
+Sequential rebuilt = Sequential.loadBundle(net.saveBundle());</code></pre>
+
+  <h3>Run it</h3>
+  <pre><code>run.cmd safetensors
+# or
+mvn -q exec:java "-Dexec.mainClass=puretf.demo.SafeTensorsDemo"</code></pre>
+
+  <h3>Cross-framework</h3>
+  <p>
+    SafeTensors is the recommended interchange format for PyTorch/TensorFlow/ONNX
+    because it is natively supported by Hugging Face Hub, <code>safetensors</code>
+    Python library, and ONNX Runtime. Use the Python bridge:
+  </p>
+  <pre><code># Python: export any framework → safetensors
+python scripts/export_to_safetensors.py --torch model.pt --out model.safetensors
+python scripts/export_to_safetensors.py --tf model.h5 --out model.safetensors
+python scripts/export_to_safetensors.py --onnx model.onnx --out model.safetensors</code></pre>
+  <p>Then in Java: <code>SafeTensors.read(Path.of("model.safetensors"))</code>.</p>
+
+  <h2>2 · ONNX (native read + write)</h2>
+  <p>
+    ONNX (Open Neural Network Exchange) is the standard for model portability.
+    A model is a protobuf <code>ModelProto</code> containing a graph of nodes
+    and <b>initializers</b> (the weight tensors). Our native reader parses the
+    protobuf wire format and extracts every initializer into the bundle.
+    The writer emits a valid ONNX <code>ModelProto</code> (ir_version 8, opset 13)
+    with initializers and a feed-forward compute graph (Gemm, Conv, Relu, etc.)
+    reconstructed from the layer manifest.
+  </p>
+
+  <h3>Java API</h3>
+  <pre><code>// write (weights + graph from manifest)
+Onnx.write(Path.of("model.onnx"), net.saveBundle());
+
+// read (weights only — initializers)
+ModelBundle back = Onnx.read(Path.of("model.onnx"));</code></pre>
+
+  <h3>Run it</h3>
+  <pre><code>run.cmd onnx
+# or
+mvn -q exec:java "-Dexec.mainClass=puretf.demo.OnnxDemo"</code></pre>
+
+  <div class="note">
+    <b>ONNX import note.</b> The native reader extracts <b>initializers</b>
+    (weights). It does not reconstruct the full compute graph into a
+    <code>Sequential</code> because ONNX graphs can be arbitrary DAGs.
+    For a full engine round-trip, export the engine's own bundle to ONNX
+    (which includes the manifest in the producer metadata), or pair the
+    ONNX weights with a separately stored manifest.
+  </div>
+
+  <h2>3 · PyTorch (best-effort native + Python bridge)</h2>
+  <p>
+    PyTorch <code>.pt</code>/<code>.pth</code> files are ZIP archives containing
+    a pickled <code>data.pkl</code> (the state dict) and raw storage blobs
+    (<code>data/0</code>, <code>data/1</code>, …). Our best-effort native reader
+    (<code>puretf.serialize.Torch</code>) opens the ZIP, reads the storage blobs,
+    and attempts to decode the pickle to map names → (storage, dtype, shape, offset).
+    It works for standard CPU float32 models saved with
+    <code>torch.save(model.state_dict(), ...)</code>. For compressed storages,
+    complex pickles, or GPU models, use the Python bridge:
+  </p>
+  <pre><code>python scripts/export_to_safetensors.py --torch model.pt --out model.safetensors
+# Then in Java:
+ModelBundle b = SafeTensors.read(Path.of("model.safetensors"));</code></pre>
+
+  <h3>Run it</h3>
+  <pre><code>mvn -q compile "-Dexec.mainClass=puretf.serialize.Torch" exec:java "-Dexec.args=model.pt"</code></pre>
+
+  <h2>4 · TensorFlow / Keras (best-effort native + Python bridge)</h2>
+  <p>
+    Keras <code>.h5</code>/<code>.weights.h5</code> files are HDF5 containers.
+    Our best-effort native reader (<code>puretf.serialize.TensorFlow</code>)
+    parses the HDF5 superblock (v1/v2), walks the group structure, and extracts
+    contiguous float32 datasets. It handles the common
+    <code>model.save_weights()</code> output. For SavedModel directories,
+    compressed datasets, or complex dtypes, use the Python bridge:
+  </p>
+  <pre><code>python scripts/export_to_safetensors.py --tf model.h5 --out model.safetensors
+# Then in Java:
+ModelBundle b = SafeTensors.read(Path.of("model.safetensors"));</code></pre>
+
+  <h3>Run it</h3>
+  <pre><code>mvn -q compile "-Dexec.mainClass=puretf.serialize.TensorFlow" exec:java "-Dexec.args=model.h5"</code></pre>
+
+  <h2>Putting it together: the recommended workflow</h2>
+  <table>
+    <tr><th>Source</th><th>Recommended path</th></tr>
+    <tr><td>PyTorch <code>.pt</code>/<code>.pth</code></td>
+    <td><code>export_to_safetensors.py --torch</code> → <code>SafeTensors.read()</code></td></tr>
+    <tr><td>TensorFlow/Keras <code>.h5</code></td>
+    <td><code>export_to_safetensors.py --tf</code> → <code>SafeTensors.read()</code></td></tr>
+    <tr><td>ONNX <code>.onnx</code></td>
+    <td><code>Onnx.read()</code> (native) or <code>export_to_safetensors.py --onnx</code></td></tr>
+    <tr><td>SafeTensors <code>.safetensors</code></td>
+    <td><code>SafeTensors.read()</code> (native)</td></tr>
+    <tr><td>Engine native</td>
+    <td><code>Sequential.saveBundle()</code> / <code>Sequential.loadBundle()</code></td></tr>
+  </table>
+
+  <h2>Complete cross-framework example</h2>
+  <pre><code>// 1. Train a model in PyTorch (external)
+// 2. Export to safetensors via Python bridge
+//    python scripts/export_to_safetensors.py --torch model.pt --out model.safetensors
+
+// 3. In Java: import weights
+ModelBundle b = SafeTensors.read(Path.of("model.safetensors"));
+
+// 4. If you have the architecture manifest (e.g., saved separately or reconstructed),
+//    rebuild a Sequential. Otherwise, inspect weights:
+for (NamedTensor t : b.tensors()) {
+    System.out.println(t.name() + " " + Arrays.toString(t.shape()) + " " + t.dtype());
+}
+
+// 5. Export to ONNX for deployment elsewhere
+Onnx.write(Path.of("model.onnx"), b);
+
+// 6. Or save engine-native bundle for full reload
+Sequential net = Sequential.loadBundle(b); // if manifest available
+net.saveBundle().saveTo(Path.of("model.bin"));</code></pre>
+
+  <h2>Format comparison</h2>
+  <table>
+    <tr><th>Format</th><th>Read</th><th>Write</th><th>Architecture</th><th>Best for</th></tr>
+    <tr><td>SafeTensors</td><td>✓ native</td><td>✓ native</td><td>weights only</td><td>PyTorch/TF/ONNX interchange, Hugging Face Hub</td></tr>
+    <tr><td>ONNX</td><td>✓ native (initializers)</td><td>✓ native (graph + weights)</td><td>optional (graph)</td><td>Inference runtimes, cross-framework deployment</td></tr>
+    <tr><td>PyTorch</td><td>~ best-effort</td><td>✗</td><td>weights only</td><td>Legacy .pt files; prefer export → SafeTensors</td></tr>
+    <tr><td>TensorFlow</td><td>~ best-effort</td><td>✗</td><td>weights only</td><td>Legacy .h5; prefer export → SafeTensors</td></tr>
+    <tr><td>Engine native</td><td>✓ native</td><td>✓ native</td><td>full (manifest)</td><td>Checkpoints, reload, copy(), experiments</td></tr>
+  </table>
+
+  <p><a href="ch11-rnn-lstm-nlp.html">← Chapter 11 · RNN, LSTM & NLP</a> &mdash;
+     or <a href="index.html">back to the contents</a></p>
+</main>
+<footer>pure-tf-java book · Chapter 12</footer>
+</body>
+</html>

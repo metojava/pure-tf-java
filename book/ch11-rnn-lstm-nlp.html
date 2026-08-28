@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ch.11 · RNN, LSTM &amp; NLP</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site">
+  <h1>Neural Networks in Pure Java</h1>
+  <span class="sub">Chapter 11 · Recurrent networks &amp; building NLP models</span>
+<nav class="chapters">
+  <ol>
+    <li><a href="index.html">Home</a></li>
+    <li><a href="ch1-getting-started.html">1. Getting started</a></li>
+    <li><a href="ch2-tensors.html">2. Tensors</a></li>
+    <li><a href="ch3-layers.html">3. Layers</a></li>
+    <li><a href="ch4-training.html">4. Training</a></li>
+    <li><a href="ch5-optimizers-lr.html">5. Optimizers &amp; LR</a></li>
+    <li><a href="ch6-evaluation.html">6. Evaluation</a></li>
+    <li><a href="ch7-persistence.html">7. Save &amp; load</a></li>
+    <li><a href="ch8-putting-it-together.html">8. End to end</a></li>
+    <li><a href="ch9-advanced-layers.html">9. Advanced layers</a></li>
+    <li><a href="ch10-sequence-generative.html">10. Generative &amp; sequence</a></li>
+    <li><a href="ch11-rnn-lstm-nlp.html">11. RNN, LSTM &amp; NLP</a></li>
+  </ol>
+</nav></header><main>
+  <h2>Why recurrent networks?</h2>
+  <p>
+    A <code>Dense</code> layer maps a fixed-size vector to a fixed-size vector. Language is
+    a <em>sequence</em>: a sentence has variable length, and each word's meaning depends on
+    what came before. Recurrent networks consume sequences step by step while carrying a
+    <em>hidden state</em> — a running memory of everything seen so far. In this library all
+    sequence input follows one convention:
+  </p>
+  <pre><code>[B, T, D]   =  B sentences (batch), T tokens each (time), D features per token</code></pre>
+  <p>The engine unrolls each time step through primitive autograd ops, so gradients are
+     exact backpropagation-through-time (BPTT), no approximations.</p>
+
+  <h2>Meet the family: RNN, LSTM, GRU</h2>
+  <table>
+    <tr><th>Layer</th><th>Recurrence</th><th>Trade-off</th></tr>
+    <tr><td><code>RNN</code></td>
+        <td><code>h' = tanh(x·K + h·U + b)</code></td>
+        <td>simplest; suffers vanishing gradients over long sequences</td></tr>
+    <tr><td><code>LSTM</code></td>
+        <td>input/forget/output gates + a separate cell state <code>c</code></td>
+        <td>the deliverable: long-term memory, standard for text</td></tr>
+    <tr><td><code>GRU</code></td>
+        <td>update/reset gates, no separate cell state</td>
+        <td>cheaper than LSTM, similar accuracy</td></tr>
+  </table>
+
+  <h2>How the LSTM actually works</h2>
+  <p>
+    Here is the exact computation the library runs in <code>LSTM.step</code>, for one time
+    step (units <code>H</code>). The kernel <code>K</code>, recurrent <code>U</code> and
+    bias <code>b</code> are shaped <code>[D,4H]</code>, <code>[H,4H]</code> and
+    <code>[4H]</code>, packed as four gate blocks <code>i|f|g|o</code>:
+  </p>
+  <pre><code>z   = x·K + h·U + b                    // [B, 4H] combined gate inputs
+gi  = sigmoid(z[:H])         // input gate
+gf  = sigmoid(z[H:2H])       // forget gate
+gg  = tanh(  z[2H:3H])       // candidate cell content
+go  = sigmoid(z[3H:4H])      // output gate
+
+c'  = gf * c + gi * gg       // update the cell memory
+h'  = go * tanh(c')          // new hidden state</code></pre>
+  <div class="note">
+    <b>Read it in words.</b> The <b>forget gate</b> decides how much of the old memory
+    <code>c</code> to keep, the <b>input gate</b> how much new candidate content
+    <code>gg</code> to write in, and the <b>output gate</b> how much of the memory to expose
+    as the hidden state <code>h</code>. Because the cell state <code>c</code> is only
+    scaled (never overwritten by a squashing function), it can carry gradients across very
+    long distances — that is precisely why LSTMs beat plain RNNs on language. The
+    library even initializes the forget-gate bias to <code>1</code> (a common trick that
+    makes the model start "remembering").
+  </div>
+
+  <h2>Recurrent layer API</h2>
+  <pre><code>new RNN(units)                          // return last state only
+new LSTM(units)                         // return last state only
+new GRU(units, true)                    // return EVERY timestep: [B, T, H]
+
+// all three persist via saveTo/loadFrom
+LSTM  lstm = new LSTM(64);
+Sequential.loadFrom(Path.of("model.bin"));</code></pre>
+  <table>
+    <tr><th>Constructor</th><th>Output</th><th>Use it for</th></tr>
+    <tr><td><code>LSTM(units)</code></td><td><code>[B, H]</code> (last state)</td>
+        <td>sentiment / classification / sequence-to-one</td></tr>
+    <tr><td><code>LSTM(units, true)</code></td><td><code>[B, T, H]</code> (every step)</td>
+        <td>sequence-to-sequence, stacked RNNs, tagging</td></tr>
+  </table>
+  <div class="tip">
+    <b>Connecting to a classifier.</b> <code>Dense</code> expects <code>[rows, features]</code>.
+    With <code>returnSequence=false</code> the LSTM already gives <code>[B,H]</code>, so a
+    <code>Dense</code> follows directly. With <code>returnSequence=true</code> you get
+    <code>[B,T,H]</code> and must reshape to <code>[B*T, H]</code> before a <code>Dense</code>
+    (see Chapter 10's text demo).
+  </div>
+
+  <h2>Text preprocessing: the <code>Tokenizer</code></h2>
+  <p>
+    Networks eat numbers, not letters. <code>Tokenizer</code> turns raw text into integer
+    token ids and back:
+  </p>
+  <pre><code>Tokenizer tok = new Tokenizer(corpus);     // learns every character's id
+int   vocab = tok.size();                   // rows for the Embedding table
+int[] ids   = tok.encode("to be");          // [t, o, ' ', b, e] -> int ids
+String s    = tok.decode(ids);              // back to "to be"</code></pre>
+  <p>
+    It is character-level by default — which is enough to build language models and still
+    captures spelling. For word-level models, pre-tokenize your corpus yourself and call
+    <code>encodeTokens(String[])</code>. Longer sequences should also be padded/truncated
+    to a fixed <code>T</code> for batching (see the notes at the end).
+  </p>
+
+  <h2>NLP models you can build — and how</h2>
+
+  <h3>1 · Language model / text generation</h3>
+  <p>
+    The task: given the words so far, predict the next token. Trained by <em>teacher
+    forcing</em> — feed the real sequence, ask for each next char (<code>returnSequence=true</code>).
+    Then generate by feeding the growing prefix and sampling. This is exactly
+    <code>run.cmd lstm-text</code>.
+  </p>
+  <pre><code>Sequential body = new Sequential()
+        .add(new Embedding(vocab, embedDim))
+        .add(new LSTM(lstm, true));               // [B,T,H] per timestep
+Sequential head = new Sequential().add(new Dense(vocab));
+
+// train one sequence, teacher-forced:
+Tensor bodyOut = body.forward(Tensor.of(floats(data), 1, T));  // [1,T,H]
+Tensor logits  = head.forward(bodyOut.reshape(T, lstm));       // [T,vocab]
+Tensor loss    = Tensor.softmaxCE(logits, target);             // next-char labels
+// ... zeroGrad, backward, clipGradNorm, Adam.step ...</code></pre>
+  <pre><code>// generate:
+int next = Sampler.categorical(rnd, lastLogits, 0.8f);   // temperature sampling
+String s = tok.decode(new int[]{next});</code></pre>
+  <p>Small temperature &rarr; predictable text; high temperature &rarr; creative/random.</p>
+
+  <h3>2 · Sentiment / text classification</h3>
+  <p>
+    Sequence-to-one: run the LSTM over the sentence and classify the final hidden state.
+    Because we only need the last state, use <code>LSTM(units, false)</code> and a
+    <code>Dense(classes)</code> head.
+  </p>
+  <pre><code>Sequential classifier = new Sequential()
+        .add(new Embedding(vocab, embedDim))
+        .add(new LSTM(64))                       // -> [B, 64]
+        .add(new Dense(2));                      // positive / negative
+classifier.fitClassifier(...);                   // reuse Chapters 4 &amp; 6 machinery</code></pre>
+  <p>
+    With <code>returnSequence=false</code>, the model is a drop-in for every classifier API you
+    already know in Chapters 4–6 (fit, evaluate, Metrics, predict).
+  </p>
+
+  <h3>3 · Sequence-to-sequence (translation, summarisation, chatbot)</h3>
+  <p>
+    Encoder–decoder: an encoder LSTM reads the source and returns every state; a decoder
+    LSTM reads those plus the target, so it can emit one output per target step. This is
+    the architecture behind translation without attention.
+  </p>
+  <pre><code>Sequential encoder = new Sequential()
+        .add(new Embedding(srcVocab, embedDim))
+        .add(new LSTM(hidden, true));            // [B, T, H] for the decoder
+Sequential decoder = new Sequential()
+        .add(new Embedding(tgtVocab, embedDim))
+        .add(new LSTM(hidden, true));            // emit every target step
+// head: reshape [B,T,H] -> [B*T,H], Dense(tgtVocab), softmaxCE against target text</code></pre>
+
+  <h3>4 · Time-series forecasting &amp; regression</h3>
+  <p>
+    Sequences need not be words. Feed a window of past sensor readings / prices as
+    <code>[B, T, D]</code> and train an LSTM to predict the next values (a regression, so
+    use <code>mse</code>):
+  </p>
+  <pre><code>Sequential forecaster = new Sequential()
+        .add(new LSTM(32))                        // last state
+        .add(new Dense(4, Dense.Act.RELU))
+        .add(new Dense(1));                       // predicted next value
+Tensor loss = pred.mse(target);                   // mean squared error
+loss.backward(); net.clipGradNorm(1f); opt.step(net.params());</code></pre>
+
+  <h3>5 · Tagging &amp; autocomplete</h3>
+  <p>
+    Part-of-speech tagging, named-entity recognition, or next-word autocomplete all want an
+    output <em>per token</em> — so <code>returnSequence=true</code> plus a
+    <code>Dense</code> head (per-token labels), as in the language-model pattern above.
+  </p>
+
+  <h2>Complete worked example (draft)</h2>
+  <p>
+    A ready-to-adapt skeleton combining everything. This character language model is the
+    <code>LstmTextDemo</code> in miniature — copy it and swap the corpus for your own text.
+  </p>
+  <pre><code>import puretf.Optim;
+import puretf.Tensor;
+import puretf.data.Sampler;
+import puretf.data.Tokenizer;
+import puretf.nn.*;
+
+public final class TinyCharLM {
+  public static void main(String[] a) {
+    String text = "java is pure fun. java is pure fun. java is pure fun. ";
+    Tokenizer tok = new Tokenizer(text);
+    int V = tok.size(), T = text.length();
+    int[] data = tok.encode(text), target = new int[T];
+    for (int i = 0; i < T - 1; i++) target[i] = data[i + 1];
+    target[T - 1] = data[0];
+
+    Sequential body = new Sequential()
+        .add(new Embedding(V, 24)).add(new LSTM(48, true));   // [1,T,48]
+    Sequential head = new Sequential().add(new Dense(V));
+    body.build(T); head.build(48);
+    var params = new java.util.ArrayList&lt;Tensor&gt;();
+    params.addAll(body.params()); params.addAll(head.params());
+    Optim.Adam adam = new Optim.Adam(0.004f);
+
+    for (int s = 0; s &lt; 200; s++) {
+      Tensor.resetGraph();
+      Tensor o = body.forward(Tensor.of(f(data), 1, T));       // [1,T,48]
+      Tensor lg = head.forward(o.reshape(T, 48));              // [T,V]
+      Tensor loss = Tensor.softmaxCE(lg, target);              // scalar
+      for (Tensor p : params) p.zeroGrad();
+      loss.backward(); body.clipGradNorm(1f); head.clipGradNorm(1f);
+      adam.step(params);
+      if (s % 50 == 0) System.out.printf("step %d loss %.4f%n", s, loss.data[0]);
+    }
+
+    // generate from a seed
+    StringBuilder out = new StringBuilder("java ");
+    int[] ids = tok.encode(out.toString());
+    for (int i = 0; i &lt; 40; i++) {
+      Tensor.resetGraph();
+      Tensor o = body.forward(Tensor.of(f(ids), 1, ids.length));
+      float[] row = new float[48];
+      System.arraycopy(o.data, (ids.length - 1) * 48, row, 0, 48);
+      int next = Sampler.categorical(new java.util.Random(1), head.forward(
+              Tensor.of(row, 1, 48)).data, 0.7f);
+      out.append(tok.token(next));
+      int[] ids2 = new int[ids.length + 1];
+      System.arraycopy(ids, 0, ids2, 0, ids.length); ids2[ids.length] = next; ids = ids2;
+    }
+    System.out.println(out);
+  }
+  static float[] f(int[] a){ float[] x=new float[a.length]; for(int i=0;i&lt;a.length;i++) x[i]=a[i]; return x; }
+}</code></pre>
+
+  <h2>Practical gotchas</h2>
+  <ul>
+    <li><b>Clip your gradients.</b> Call <code>net.clipGradNorm(1f)</code> after
+        <code>backward()</code>; recurrent nets love to explode.</li>
+    <li><b>Keep sequences short for speed.</b> Cost grows with <code>T</code>
+        (every step is a matmul). A few hundred tokens is fine on CPU.</li>
+    <li><b>Pad/truncate for batching.</b> To train many sentences at once, pad them to a
+        common <code>T</code>; for now the demos train one sequence at a time.</li>
+    <li><b>Match the head reshape.</b> <code>[B,T,H]</code> &rarr;
+        <code>[B*T,H]</code> before <code>Dense</code>; sample only the latest row
+        during generation.</li>
+  </ul>
+
+  <p><a href="ch10-sequence-generative.html">← Chapter 10 · Generative &amp; sequence</a> &mdash;
+     or <a href="index.html">back to the contents</a></p>
+</main>
+<footer>pure-tf-java book · Chapter 11</footer>
+</body>
+</html>
+
