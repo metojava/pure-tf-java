@@ -312,6 +312,71 @@ public final class Tensor {
     }
 
     /**
+     * Mean binary cross-entropy with numerically-stable sigmoid fusion.
+     * {@code target} holds 0/1 values, same shape as this (logits). Equivalent
+     * to applying {@link #sigmoid()} then BCE, but stable for extreme logits.
+     * Returns a scalar node. Gradient w.r.t. logits = (sigmoid(z) - y)/m.
+     */
+    public Tensor bce(Tensor target) {
+        int m = data.length;
+        double loss = 0;
+        for (int i = 0; i < m; i++) {
+            float z = data[i], y = target.data[i];
+            float ez = (float) Math.exp(-Math.abs(z));
+            loss += Math.max(0, z) - z * y + Math.log1p(ez);
+        }
+        float mean = (float) (loss / m);
+        Tensor r = op(new float[]{mean}, new int[]{1}, this, target);
+        float[] yv = target.data;
+        r.backprop = () -> {
+            float[] g = new float[m];
+            for (int i = 0; i < m; i++) {
+                float z = data[i];
+                float s = 1f / (1f + (float) Math.exp(-z));
+                g[i] = r.grad[0] * (s - yv[i]) / m;
+            }
+            acc(this, g);
+        };
+        return r;
+    }
+
+    /**
+     * Uniform integer tensor from {@code rnd}: each element in [0, highest).
+     * Non-differentiable; handy for latent sampling, indices, or synthetic data.
+     */
+    public static Tensor randInt(Random rnd, int highest, int... shape) {
+        int n = (int) product(shape);
+        float[] data = new float[n];
+        for (int i = 0; i < n; i++) data[i] = rnd.nextInt(highest);
+        return of(data, shape);
+    }
+
+    /** Uniform output tensor in [0,1) from {@code rnd}. Non-differentiable. */
+    public static Tensor rand(Random rnd, int... shape) {
+        int n = (int) product(shape);
+        float[] data = new float[n];
+        for (int i = 0; i < n; i++) data[i] = rnd.nextFloat();
+        return of(data, shape);
+    }
+
+    /**
+     * Scales this tensor's gradient in place so its L2 norm is at most
+     * {@code maxNorm} (per-tensor). Safe on parameters or any leaf with
+     * {@code grad != null}. Returns this.
+     */
+    public Tensor clipGrad(float maxNorm) {
+        if (grad == null) return this;
+        double sum = 0;
+        for (float g : grad) sum += (double) g * g;
+        double norm = Math.sqrt(sum);
+        if (norm > maxNorm && norm > 0) {
+            float k = maxNorm / (float) norm;
+            for (int i = 0; i < grad.length; i++) grad[i] *= k;
+        }
+        return this;
+    }
+
+    /**
      * Fused softmax cross-entropy over rows. logits [B,C], labels class ids.
      * Returns scalar mean loss; gradient w.r.t. logits is the classic
      * numerically-stable (softmax - onehot)/B.
@@ -800,10 +865,10 @@ public final class Tensor {
             if (Par.worth((long) b * m * k * n)) {
                 Par.run((id, T) -> {
                     int b0 = Par.start(id, b, T), b1 = Par.start(id + 1, b, T);
-                    bmmBack(da, dw, r.grad, b0, b1, m, k, n);
+                    bmmBack(da, dw, r.grad, w.data, b0, b1, m, k, n);
                 });
             } else {
-                bmmBack(da, dw, r.grad, 0, b, m, k, n);
+                bmmBack(da, dw, r.grad, w.data, 0, b, m, k, n);
             }
             acc(this, da);
             acc(w, dw);

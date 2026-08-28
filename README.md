@@ -9,6 +9,23 @@ This is the native-free replacement for tensorflow-capi-java: every layer
 that used to emit TF graph ops now runs on the built-in tape with hand-written
 analytic gradients.
 
+there are branches : main and master in this repo 
+
+first clone :
+
+git clone https://github.com/metojava/pure-tf-java.git
+
+cd pure-tf-java
+
+git checkout main
+
+or 
+
+git checkout master
+
+master has more content
+
+
 ## Quick start
 
 ```
